@@ -1,8 +1,176 @@
-﻿# rust-win32 ace-tool（Win32 GUI + MCP stdio）
+﻿# ace-tool-windows
 
-本目录是 ace-tool 的 Rust + 纯 Win32 重写版本。目标是与 Node 版本功能 1:1 对齐，同时保持 MCP stdio 兼容，供 Codex 客户端调用。
+Rust + Win32 的 MCP Server（stdio），提供 `search_context` 与 `enhance_prompt`，并用原生 Win32 GUI 替代浏览器交互。
 
-## 对齐清单（必须与 Node 一致）
+> 原项目：https://github.com/eastxiaodong/ace-tool
+
+## 目录
+
+- 项目简介
+- 功能特性
+- 环境要求
+- 快速开始
+- 配置为 MCP Server
+- 从源码运行
+- MCP 工具说明
+- 配置说明
+- npm 打包与发布
+- 项目结构
+- 对齐清单（Node 版本）
+- 测试
+- License
+- 致谢
+
+## 项目简介
+
+本仓库是 ace-tool 的 Rust + Win32 重写版本，目标与 Node 版本功能 1:1 对齐，同时保持 MCP stdio 兼容，供 Codex 客户端调用。
+
+## 功能特性
+
+- MCP JSON-RPC over stdio，支持工具列举与调用
+- `search_context`：索引 + 检索代码库上下文
+- `enhance_prompt`：调用远端增强服务，支持中文/英文自动判断
+- Win32 GUI 交互窗口，提供继续增强 / 使用原始 / 结束对话
+- 本地索引与日志输出（`.ace-tool/`）
+
+## 环境要求
+
+- Windows 10/11（Win32 GUI）
+- Rust 工具链（建议稳定版）
+- Node.js + npm（用于发布到 npm）
+
+## 快速开始
+
+全局安装后使用：
+
+```powershell
+npm i -g ace-tool-windows
+ace-tool-win --base-url <URL> --token <TOKEN> [--enable-log]
+```
+
+## 配置为 MCP Server
+
+本项目是 MCP stdio Server。配置时只需要声明 command + args，不需要额外端口配置。
+
+说明：不同 MCP 客户端字段名可能是 `mcpServers` 或 `servers`，以客户端文档为准。下面给出两种常见 JSON 格式。
+
+### 方式一：mcpServers 格式（常见）
+
+使用 npm 全局命令：
+
+```json
+{
+  "mcpServers": {
+    "ace-tool-windows": {
+      "command": "ace-tool-win",
+      "args": ["--base-url", "<URL>", "--token", "<TOKEN>", "--enable-log"]
+    }
+  }
+}
+```
+
+使用本地 exe 路径：
+
+```json
+{
+  "mcpServers": {
+    "ace-tool-windows": {
+      "command": "C:\\\\path\\\\to\\\\ace-tool-win.exe",
+      "args": ["--base-url", "<URL>", "--token", "<TOKEN>"]
+    }
+  }
+}
+```
+
+### 方式二：JSON 模式（servers 格式）
+
+```json
+{
+  "servers": {
+    "ace-tool-windows": {
+      "command": "ace-tool-win",
+      "args": ["--base-url", "<URL>", "--token", "<TOKEN>"]
+    }
+  }
+}
+```
+
+### 参数说明
+
+- `--base-url` 必填，服务地址；未写协议会自动补 `https://`
+- `--token` 必填，ACE 服务 Token
+- `--enable-log` 可选，写入 `.ace-tool/ace-tool.log`
+
+> 提示：`enhance_prompt` 会弹 Win32 窗口确认；如果只想后台检索，可只调用 `search_context`。
+## 从源码运行
+
+```powershell
+# 在仓库根目录
+cargo run -- --base-url <URL> --token <TOKEN> [--enable-log]
+```
+
+## MCP 工具说明
+
+### search_context
+
+- 传入项目根路径与检索 query
+- 自动进行索引（`.ace-tool/index.json`）
+- 调用 `/agents/codebase-retrieval` 返回 formatted_retrieval
+
+### enhance_prompt
+
+- 调用 `/prompt-enhancer`
+- 语言检测：中文输入 -> 中文输出；英文输入 -> 英文输出
+- 工具名映射：`codebase-retrieval` -> `search_context`
+- 8 分钟超时回退到原始 prompt
+
+## 配置说明
+
+必填参数：
+- `--base-url`
+- `--token`
+
+可选参数：
+- `--enable-log`（写入 `.ace-tool/ace-tool.log`）
+
+## npm 打包与发布
+
+构建 + 拷贝 exe：
+
+```powershell
+npm run build:bin
+```
+
+本地打包验证：
+
+```powershell
+npm run pack:local
+```
+
+发布到 npm（首次需登录）：
+
+```powershell
+npm publish --access public
+```
+
+## 项目结构
+
+```
+ace-tool-windows/
+- Cargo.toml
+- package.json
+- README.md
+- src/
+  - main.rs
+  - mcp/
+  - index/
+  - enhancer/
+  - ui/
+  - utils/
+- tests/
+```
+
+## 对齐清单（Node 版本）
 
 ### MCP 协议
 - [ ] 基于 stdio 的 JSON-RPC
@@ -63,53 +231,18 @@
 - [ ] 文件日志行格式："YYYY-MM-DD HH:MM:SS | LEVEL | message"
 - [ ] 新日志流写入 Session 分隔符
 
-## 目录结构（规划）
-
-```
-rust-win32/
-- Cargo.toml
-- README.md
-- src/
-  - main.rs
-  - mcp/
-  - index/
-  - enhancer/
-  - ui/
-  - utils/
-- tests/
-```
-
-## 使用方式
-
-```bash
-# 在 rust-win32/ 目录下
-cargo run -- --base-url <URL> --token <TOKEN> [--enable-log]
-```
-
-## npm 发布与安装（Win32 x64）
+## 测试
 
 ```powershell
-# 1) 构建 exe
-cargo build --release
-New-Item -Force -ItemType Directory bin | Out-Null
-Copy-Item target\release\rust-win32.exe bin\ace-tool-win.exe
-
-# 2) 本地打包验证
-npm pack
-
-# 3) 发布到 npm（首次需 npm login）
-npm publish --access public
+cargo test
 ```
 
-全局安装后使用：
+## License
 
-```powershell
-npm i -g ace-tool-windows
-ace-tool-win --base-url <URL> --token <TOKEN> [--enable-log]
-```
+Apache-2.0
 
-## 备注
+## 致谢
 
-- 这是 Win32 GUI 应用，非 Windows 平台不支持运行。
-- MCP 通信使用 stdio；Codex 需要指向该二进制作为 MCP Server。
-- 本重写不会修改现有 Node 版本实现。
+- 原项目：ace-tool（https://github.com/eastxiaodong/ace-tool）
+
+
