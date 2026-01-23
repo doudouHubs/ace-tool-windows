@@ -86,6 +86,28 @@ rust-win32/
 cargo run -- --base-url <URL> --token <TOKEN> [--enable-log]
 ```
 
+## npm 发布与安装（Win32 x64）
+
+```powershell
+# 1) 构建 exe
+cargo build --release
+New-Item -Force -ItemType Directory bin | Out-Null
+Copy-Item target\release\rust-win32.exe bin\ace-tool-win.exe
+
+# 2) 本地打包验证
+npm pack
+
+# 3) 发布到 npm（首次需 npm login）
+npm publish --access public
+```
+
+全局安装后使用：
+
+```powershell
+npm i -g ace-tool-windows
+ace-tool-win --base-url <URL> --token <TOKEN> [--enable-log]
+```
+
 ## 备注
 
 - 这是 Win32 GUI 应用，非 Windows 平台不支持运行。

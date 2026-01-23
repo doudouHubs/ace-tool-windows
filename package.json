@@ -1,0 +1,38 @@
+{
+  "name": "ace-tool-windows",
+  "version": "0.1.0",
+  "description": "ACE MCP server for Windows (Win32)",
+  "bin": {
+    "ace-tool-win": "bin/ace-tool-win.exe"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/ace-tool-win.exe",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "Apache-2.0",
+  "scripts": {
+    "build:bin": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-bin.ps1",
+    "pack:local": "npm run build:bin && npm pack"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/doudouHubs/ace-tool-windows.git"
+  },
+  "bugs": {
+    "url": "https://github.com/doudouHubs/ace-tool-windows/issues"
+  },
+  "homepage": "https://github.com/doudouHubs/ace-tool-windows#readme",
+  "keywords": [
+    "mcp",
+    "ace-tool",
+    "win32",
+    "windows"
+  ]
+}
