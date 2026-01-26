@@ -10,7 +10,7 @@ use std::sync::mpsc::{channel, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM, RECT, COLORREF};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM, RECT, COLORREF, GetLastError};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::WC_EDITW;
 use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
@@ -23,7 +23,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
   ES_AUTOVSCROLL, ES_MULTILINE, WINDOW_STYLE, SetWindowPos, SetWindowTextW, HWND_TOPMOST,
   HWND_NOTOPMOST, SWP_NOMOVE, SWP_NOSIZE, SendMessageW, WM_SETFONT, WM_CTLCOLORDLG,
   WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_CTLCOLORBTN, BS_FLAT, WM_ERASEBKGND, GetClientRect,
-  PostMessageW, WM_APP, MessageBoxW, MB_OK,
+  PostMessageW, WM_APP, ShowWindow, SetForegroundWindow, MessageBoxW, MB_OK, SW_SHOWNORMAL,
 };
 use windows::Win32::Graphics::Gdi::{
   CreateFontW, CreateSolidBrush, DeleteObject, FillRect, SetBkColor, SetBkMode, SetTextColor,
@@ -92,7 +92,12 @@ pub fn run_prompt_window(
       ..Default::default()
     };
 
-    RegisterClassW(&wnd_class);
+    let atom = RegisterClassW(&wnd_class);
+    if atom == 0 {
+      log_debug(format!("ui: register class failed err={} ", unsafe { GetLastError().0 }));
+    } else {
+      log_debug("ui: register class ok".to_string());
+    }
 
     let params = Box::new(CreateParams {
       sender: sender.clone(),
@@ -117,9 +122,14 @@ pub fn run_prompt_window(
     )
     .unwrap_or(HWND(null_mut()));
 
-    if window.0.is_null() {
-      return SessionAction::Timeout;
-    }
+    if window.0.is_null() {
+      log_debug(format!("ui: create window failed err={}", unsafe { GetLastError().0 }));
+      return SessionAction::Timeout;
+    }
+
+    log_debug(format!("ui: window created hwnd={:?}", window));
+    let _ = unsafe { ShowWindow(window, SW_SHOWNORMAL) };
+    let _ = unsafe { SetForegroundWindow(window) };
 
     let mut msg = MSG::default();
     while GetMessageW(&mut msg, HWND(null_mut()), 0, 0).into() {
