@@ -14,6 +14,7 @@ Rust + Win32 的 MCP Server（stdio），提供 `search_context` 与 `enhance_pr
 - 从源码运行
 - MCP 工具说明
 - 配置说明
+- 环境变量（可选）
 - npm 打包与发布
 - 项目结构
 - 对齐清单（Node 版本）
@@ -45,7 +46,6 @@ Rust + Win32 的 MCP Server（stdio），提供 `search_context` 与 `enhance_pr
 
 ```powershell
 npm i -g ace-tool-windows
-ace-tool-win --base-url <URL> --token <TOKEN> [--enable-log]
 ```
 
 ## 配置为 MCP Server
@@ -123,6 +123,8 @@ cargo run -- --base-url <URL> --token <TOKEN> [--enable-log]
 - 语言检测：中文输入 -> 中文输出；英文输入 -> 英文输出
 - 工具名映射：`codebase-retrieval` -> `search_context`
 - 8 分钟超时回退到原始 prompt
+- 默认弹 Win32 窗口，等待用户点击后返回
+- 如需无 UI，可设置 `ACE_TOOL_HEADLESS=1`
 
 ## 配置说明
 
@@ -132,6 +134,16 @@ cargo run -- --base-url <URL> --token <TOKEN> [--enable-log]
 
 可选参数：
 - `--enable-log`（写入 `.ace-tool/ace-tool.log`）
+
+## 环境变量（可选）
+
+- `ACE_TOOL_HEADLESS=1`：跳过 UI，直接返回增强结果
+- `ACE_TOOL_HEADLESS_ACTION=enhanced|end|timeout`：headless 模式返回策略，默认 enhanced
+- `ACE_TOOL_DEBUG=1`：输出 MCP 调试日志（stderr + 文件）
+- `ACE_TOOL_DEBUG_VERBOSE=1`：输出更详细的帧解析日志
+- `ACE_TOOL_DEBUG_FILE=<path>`：调试日志路径，默认 `%TEMP%\ace-tool-mcp.log`
+
+默认行为：`enhance_prompt` 会弹 Win32 窗口并等待用户点击后返回。
 
 ## npm 打包与发布
 
@@ -244,5 +256,4 @@ Apache-2.0
 ## 致谢
 
 - 原项目：ace-tool（https://github.com/eastxiaodong/ace-tool）
-
 
