@@ -18,6 +18,7 @@
   ],
   "license": "Apache-2.0",
   "scripts": {
+    "release": "cargo build --release",
     "build:bin": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-bin.ps1",
     "pack:local": "npm run build:bin && npm pack"
   },

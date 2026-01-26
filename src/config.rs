@@ -27,7 +27,7 @@ pub fn init_config() -> Result<Config, String> {
   if base_url.starts_with("http://") {
     let original = base_url.clone();
     base_url = base_url.replacen("http://", "https://", 1);
-    println!("Auto converted http:// to https:// ({} -> {})", original, base_url);
+    eprintln!("Auto converted http:// to https:// ({} -> {})", original, base_url);
   }
 
   base_url = base_url.trim_end_matches('/').to_string();
