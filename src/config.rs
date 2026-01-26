@@ -1,5 +1,8 @@
 ﻿use std::collections::HashSet;
 
+/// 运行时配置，来源于 CLI 参数与内置默认值。
+/// 
+/// 这些字段会在 MCP 工具调用时复用，避免重复解析参数。
 #[derive(Clone, Debug)]
 pub struct Config {
   pub base_url: String,
@@ -12,12 +15,20 @@ pub struct Config {
   pub enable_log: bool,
 }
 
+/// CLI 参数的中间解析结果。
+/// 
+/// 这里不做强校验，统一在 `init_config` 中处理缺失项。
 struct ParsedArgs {
   base_url: Option<String>,
   token: Option<String>,
   enable_log: bool,
 }
 
+/// 解析命令行并构造最终配置。
+/// 
+/// # 返回
+/// - `Ok(Config)`：参数完整且合法
+/// - `Err(String)`：缺失参数或无法规范化
 pub fn init_config() -> Result<Config, String> {
   let args = parse_args();
   let base_url = args.base_url.ok_or_else(|| "Missing required argument: --base-url".to_string())?;
@@ -26,6 +37,7 @@ pub fn init_config() -> Result<Config, String> {
   let mut base_url = normalize_base_url(&base_url);
   if base_url.starts_with("http://") {
     let original = base_url.clone();
+    // 保证走 https，避免被远端拒绝或降级为不安全连接。
     base_url = base_url.replacen("http://", "https://", 1);
     eprintln!("Auto converted http:// to https:// ({} -> {})", original, base_url);
   }
@@ -43,6 +55,7 @@ pub fn init_config() -> Result<Config, String> {
   })
 }
 
+/// 解析 CLI 参数，保持最小逻辑以降低解析出错风险。
 fn parse_args() -> ParsedArgs {
   let mut result = ParsedArgs {
     base_url: None,
@@ -73,6 +86,7 @@ fn parse_args() -> ParsedArgs {
   result
 }
 
+/// 规范化 base-url，补齐协议前缀。
 fn normalize_base_url(value: &str) -> String {
   if value.starts_with("http://") || value.starts_with("https://") {
     value.to_string()
@@ -81,6 +95,7 @@ fn normalize_base_url(value: &str) -> String {
   }
 }
 
+/// 默认可索引的文本文件后缀集合。
 fn default_text_extensions() -> HashSet<String> {
   let list = [
     ".py", ".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs",
@@ -110,6 +125,7 @@ fn default_text_extensions() -> HashSet<String> {
   list.iter().map(|s| s.to_string()).collect()
 }
 
+/// 默认排除的路径/文件模式列表。
 fn default_exclude_patterns() -> Vec<String> {
   vec![
     ".venv", "venv", ".env", "env", "node_modules",

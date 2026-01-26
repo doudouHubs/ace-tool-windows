@@ -4,6 +4,7 @@ use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
 
+/// 提示词增强器，封装与远端 `/prompt-enhancer` 的交互。
 pub struct PromptEnhancer {
   base_url: String,
   client: Client,
@@ -11,6 +12,7 @@ pub struct PromptEnhancer {
 }
 
 impl PromptEnhancer {
+  /// 创建增强器并初始化 HTTP 客户端（含鉴权头）。
   pub fn new(index_manager: IndexManager, base_url: String, token: String) -> Result<Self, String> {
     let mut headers = HeaderMap::new();
     let auth_header = format!("Bearer {}", token);
@@ -33,6 +35,7 @@ impl PromptEnhancer {
     })
   }
 
+  /// 主入口：加载索引并调用增强 API。
   pub async fn enhance(&self, original_prompt: &str, conversation_history: &str) -> Result<String, String> {
     let blob_names = self.index_manager.load_index();
     self.call_prompt_enhancer_api(original_prompt, conversation_history, &blob_names)
@@ -40,17 +43,19 @@ impl PromptEnhancer {
       .map(|text| replace_tool_names(&text))
   }
 
+  /// 读取索引中的 blob 名称（用于增强 API）。
   pub fn load_blob_names(&self) -> Vec<String> {
     self.index_manager.load_index()
   }
 
-  pub async fn call_prompt_enhancer_api(
-    &self,
+  /// 直接调用远端 prompt enhancer API。
+  &self,
     original_prompt: &str,
     conversation_history: &str,
     blob_names: &[String],
   ) -> Result<String, String> {
     let chat_history = parse_chat_history(conversation_history);
+    // 根据输入语言决定是否强制中文输出。
     let language_guideline = if should_use_chinese(original_prompt) {
       "Please respond in Chinese (Simplified Chinese). 请务必使用中文回复。"
     } else {
@@ -121,6 +126,7 @@ impl PromptEnhancer {
   }
 }
 
+/// 将文本聊天记录解析为 API 所需的 role/content 列表。
 fn parse_chat_history(history: &str) -> Vec<Value> {
   let mut chat_history = Vec::new();
   for line in history.lines() {
@@ -144,11 +150,13 @@ fn parse_chat_history(history: &str) -> Vec<Value> {
   chat_history
 }
 
+/// 将远端工具名映射为本地 MCP 工具名。
 fn replace_tool_names(text: &str) -> String {
   text.replace("codebase-retrieval", "search_context")
     .replace("codebase_retrieval", "search_context")
 }
 
+/// 根据输入文本粗略判断是否应使用中文回复。
 fn should_use_chinese(text: &str) -> bool {
   if contains_cjk(text) {
     return true;
@@ -178,12 +186,14 @@ fn should_use_chinese(text: &str) -> bool {
   true
 }
 
+/// 判断是否包含 CJK 字符。
 fn contains_cjk(text: &str) -> bool {
   text
     .chars()
     .any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
 }
 
+/// 统计 ASCII 单词数量，用于粗略语言判定。
 fn count_ascii_words(text: &str) -> usize {
   let mut count = 0usize;
   let mut in_word = false;

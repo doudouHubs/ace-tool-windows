@@ -72,7 +72,8 @@ struct PinState {
   pinned: bool,
 }
 
-pub fn run_prompt_window(
+/// 启动 Win32 提示词确认窗口，阻塞直到用户选择或超时。
+pub fn run_prompt_window(
   prompt: &str,
   timeout: Duration,
   continue_cb: ContinueCallback,
@@ -141,7 +142,8 @@ pub fn run_prompt_window(
   receiver.recv().unwrap_or(SessionAction::Timeout)
 }
 
-unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+/// 窗口过程：处理创建、按钮点击、定时器与绘制等消息。
+unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
   match msg {
     WM_CREATE => {
       let createstruct = unsafe { &*(lparam.0 as *const CREATESTRUCTW) };
@@ -401,7 +403,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
   }
 }
 
-fn create_button(hwnd: HWND, text: &str, x: i32, y: i32, width: i32, height: i32, id: usize, flat: bool) -> HWND {
+/// 创建按钮控件。
+fn create_button(hwnd: HWND, text: &str, x: i32, y: i32, width: i32, height: i32, id: usize, flat: bool) -> HWND {
   unsafe {
     let mut style = WS_CHILD | WS_VISIBLE;
     if flat {
@@ -425,7 +428,8 @@ fn create_button(hwnd: HWND, text: &str, x: i32, y: i32, width: i32, height: i32
   }
 }
 
-fn create_label(hwnd: HWND, text: &str, x: i32, y: i32, width: i32, height: i32) -> HWND {
+/// 创建静态文本控件。
+fn create_label(hwnd: HWND, text: &str, x: i32, y: i32, width: i32, height: i32) -> HWND {
   unsafe {
     windows::Win32::UI::WindowsAndMessaging::CreateWindowExW(
       Default::default(),
@@ -445,7 +449,8 @@ fn create_label(hwnd: HWND, text: &str, x: i32, y: i32, width: i32, height: i32)
   }
 }
 
-fn read_edit_text(hwnd: HWND) -> String {
+/// 读取编辑框内容。
+fn read_edit_text(hwnd: HWND) -> String {
   unsafe {
     let length = GetWindowTextLengthW(hwnd);
     if length == 0 {
@@ -460,7 +465,8 @@ fn read_edit_text(hwnd: HWND) -> String {
   }
 }
 
-fn to_wstring(input: &str) -> Vec<u16> {
+/// 将 Rust 字符串转换为 Win32 宽字符串（以 0 结尾）。
+fn to_wstring(input: &str) -> Vec<u16> {
   OsStr::new(input).encode_wide().chain(std::iter::once(0)).collect()
 }
 
@@ -476,20 +482,23 @@ fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
   COLORREF((r as u32) | ((g as u32) << 8) | ((b as u32) << 16))
 }
 
-fn set_control_font(hwnd: HWND, font: HFONT) {
+/// 设置控件字体。
+fn set_control_font(hwnd: HWND, font: HFONT) {
   unsafe {
     let _ = SendMessageW(hwnd, WM_SETFONT, WPARAM(font.0 as usize), LPARAM(1));
   }
 }
 
-fn format_remaining(ms: u32) -> String {
+/// 将剩余毫秒数格式化为 mm:ss。
+fn format_remaining(ms: u32) -> String {
   let total = ms / 1000;
   let minutes = total / 60;
   let seconds = total % 60;
   format!("{:02}:{:02}", minutes, seconds)
 }
 
-fn set_loading(state: &WindowState, loading: bool) {
+/// 切换加载态，避免重复点击。
+fn set_loading(state: &WindowState, loading: bool) {
   let label = if loading { "增强中..." } else { "继续增强" };
   unsafe {
     let _ = SetWindowTextW(state.btn_continue, PCWSTR(to_wstring(label).as_ptr()));
@@ -503,13 +512,15 @@ fn set_loading(state: &WindowState, loading: bool) {
   }
 }
 
-fn pin_state_path() -> std::path::PathBuf {
+/// 固定窗口状态持久化路径。
+fn pin_state_path() -> std::path::PathBuf {
   let project_root = detect_project_root();
   let ace_dir = get_ace_dir(&project_root);
   ace_dir.join("pin.json")
 }
 
-fn load_pin_state() -> bool {
+/// 读取固定窗口状态。
+fn load_pin_state() -> bool {
   let path = pin_state_path();
   if !path.exists() {
     return false;
@@ -520,7 +531,8 @@ fn load_pin_state() -> bool {
     .unwrap_or(false)
 }
 
-fn save_pin_state(pinned: bool) {
+/// 保存固定窗口状态。
+fn save_pin_state(pinned: bool) {
   let path = pin_state_path();
   if let Some(parent) = path.parent() {
     let _ = fs::create_dir_all(parent);

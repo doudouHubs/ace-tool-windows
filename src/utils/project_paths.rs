@@ -1,6 +1,7 @@
 ﻿use std::fs;
 use std::path::{Path, PathBuf};
 
+/// 由当前目录向上查找项目根（优先 .ace-tool，其次 .git）。
 #[allow(dead_code)]
 pub fn detect_project_root() -> PathBuf {
   let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -27,6 +28,7 @@ pub fn detect_project_root() -> PathBuf {
   cwd
 }
 
+/// 获取 `.ace-tool` 目录路径，不存在时自动创建。
 #[allow(dead_code)]
 pub fn get_ace_dir(project_root: &Path) -> PathBuf {
   let ace_dir = project_root.join(".ace-tool");
@@ -37,16 +39,19 @@ pub fn get_ace_dir(project_root: &Path) -> PathBuf {
   ace_dir
 }
 
+/// 获取索引文件路径（.ace-tool/index.json）。
 #[allow(dead_code)]
 pub fn get_index_file_path(project_root: &Path) -> PathBuf {
   get_ace_dir(project_root).join("index.json")
 }
 
+/// 统一路径分隔符为 `/`。
 #[allow(dead_code)]
 pub fn normalize_path(path: &Path) -> String {
   path.to_string_lossy().replace('\\', "/")
 }
 
+/// 确保 .ace-tool 写入 .gitignore（若存在）。
 #[allow(dead_code)]
 fn add_to_gitignore(project_root: &Path) -> std::io::Result<()> {
   let gitignore_path = project_root.join(".gitignore");

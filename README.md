@@ -1,30 +1,71 @@
 ﻿# ace-tool-windows
 
-Rust + Win32 的 MCP Server（stdio），提供 `search_context` 与 `enhance_prompt`，并用原生 Win32 GUI 替代浏览器交互。
+Rust + Win32 的 MCP Server（stdio），提供 `search_context` 与 `enhance_prompt`，用原生 Win32 GUI 替代浏览器交互。
 
 > 原项目：https://github.com/eastxiaodong/ace-tool
 
-## 目录
+## 快速开始
 
-- 项目简介
-- 功能特性
-- 环境要求
-- 快速开始
-- 配置为 MCP Server
-- 从源码运行
-- MCP 工具说明
-- 配置说明
-- 环境变量（可选）
-- npm 打包与发布
-- 项目结构
-- 对齐清单（Node 版本）
-- 测试
-- License
-- 致谢
+### 1) 安装
+
+```powershell
+npm i -g ace-tool-windows
+```
+
+### 2) 直接运行（本地验证）
+
+```powershell
+ace-tool-win --base-url <URL> --token <TOKEN> [--enable-log]
+```
+
+### 3) 配置为 MCP Server
+
+> 不同 MCP 客户端字段名可能是 `mcpServers` 或 `servers`，以客户端文档为准。
+
+**mcpServers 格式（常见）**
+
+```json
+{
+  "mcpServers": {
+    "ace-tool-windows": {
+      "command": "ace-tool-win",
+      "args": ["--base-url", "<URL>", "--token", "<TOKEN>", "--enable-log"]
+    }
+  }
+}
+```
+
+**使用本地 exe 路径**
+
+```json
+{
+  "mcpServers": {
+    "ace-tool-windows": {
+      "command": "C:\\path\\to\\ace-tool-win.exe",
+      "args": ["--base-url", "<URL>", "--token", "<TOKEN>"]
+    }
+  }
+}
+```
+
+**servers 格式（兼容模式）**
+
+```json
+{
+  "servers": {
+    "ace-tool-windows": {
+      "command": "ace-tool-win",
+      "args": ["--base-url", "<URL>", "--token", "<TOKEN>"]
+    }
+  }
+}
+```
+
+配置完成后，在 AI CLI 中输入 `xxxxx -enhance` 即可触发 `enhance_prompt`（同样支持 `-enhancer`）。
 
 ## 项目简介
 
-本仓库是 ace-tool 的 Rust + Win32 重写版本，目标与 Node 版本功能 1:1 对齐，同时保持 MCP stdio 兼容，供 Codex 客户端调用。
+本仓库是 ace-tool 的 Rust + Win32 重写版本，目标与 Node 版本功能 1:1 对齐，同时保持 MCP stdio 兼容，供 Codex / MCP 客户端调用。
 
 ## 功能特性
 
@@ -40,74 +81,27 @@ Rust + Win32 的 MCP Server（stdio），提供 `search_context` 与 `enhance_pr
 - Rust 工具链（建议稳定版）
 - Node.js + npm（用于发布到 npm）
 
-## 快速开始
+## 配置说明
 
-全局安装后使用：
-
-```powershell
-npm i -g ace-tool-windows
-```
-
-## 配置为 MCP Server
-
-本项目是 MCP stdio Server。配置时只需要声明 command + args，不需要额外端口配置。
-
-说明：不同 MCP 客户端字段名可能是 `mcpServers` 或 `servers`，以客户端文档为准。下面给出两种常见 JSON 格式。
-
-### 方式一：mcpServers 格式（常见）
-
-使用 npm 全局命令：
-
-```json
-{
-  "mcpServers": {
-    "ace-tool-windows": {
-      "command": "ace-tool-win",
-      "args": ["--base-url", "<URL>", "--token", "<TOKEN>", "--enable-log"]
-    }
-  }
-}
-```
-
-使用本地 exe 路径：
-
-```json
-{
-  "mcpServers": {
-    "ace-tool-windows": {
-      "command": "C:\\\\path\\\\to\\\\ace-tool-win.exe",
-      "args": ["--base-url", "<URL>", "--token", "<TOKEN>"]
-    }
-  }
-}
-```
-
-### 方式二：JSON 模式（servers 格式）
-
-```json
-{
-  "servers": {
-    "ace-tool-windows": {
-      "command": "ace-tool-win",
-      "args": ["--base-url", "<URL>", "--token", "<TOKEN>"]
-    }
-  }
-}
-```
-
-### 参数说明
+### CLI 参数
 
 - `--base-url` 必填，服务地址；未写协议会自动补 `https://`
 - `--token` 必填，ACE 服务 Token
 - `--enable-log` 可选，写入 `.ace-tool/ace-tool.log`
 
-> 提示：`enhance_prompt` 会弹 Win32 窗口确认；如果只想后台检索，可只调用 `search_context`。
-## 从源码运行
+### 环境变量（可选）
 
-```powershell
-# 在仓库根目录
-cargo run -- --base-url <URL> --token <TOKEN> [--enable-log]
-```
+- `ACE_TOOL_HEADLESS=1`：跳过 UI，直接返回增强结果
+- `ACE_TOOL_HEADLESS_ACTION=enhanced|end|timeout`：headless 模式返回策略，默认 enhanced
+- `ACE_TOOL_DEBUG=1`：输出 MCP 调试日志（stderr + 文件）
+- `ACE_TOOL_DEBUG_VERBOSE=1`：输出更详细的帧解析日志
+- `ACE_TOOL_DEBUG_FILE=<path>`：调试日志路径，默认 `%TEMP%\\ace-tool-mcp.log`
+
+### 超时规则（重要）
+
+- 本项目默认不提供自定义超时参数。
+- MCP 调用超时以客户端（Codex）配置为准，例如 `tool_timeout_sec` / `startup_timeout_sec`。
+- 如需调整，请在 Codex 客户端配置中修改，不建议在服务端再做一套超时逻辑。
 
 ## MCP 工具说明
 
@@ -126,24 +120,12 @@ cargo run -- --base-url <URL> --token <TOKEN> [--enable-log]
 - 默认弹 Win32 窗口，等待用户点击后返回
 - 如需无 UI，可设置 `ACE_TOOL_HEADLESS=1`
 
-## 配置说明
+## 从源码运行
 
-必填参数：
-- `--base-url`
-- `--token`
-
-可选参数：
-- `--enable-log`（写入 `.ace-tool/ace-tool.log`）
-
-## 环境变量（可选）
-
-- `ACE_TOOL_HEADLESS=1`：跳过 UI，直接返回增强结果
-- `ACE_TOOL_HEADLESS_ACTION=enhanced|end|timeout`：headless 模式返回策略，默认 enhanced
-- `ACE_TOOL_DEBUG=1`：输出 MCP 调试日志（stderr + 文件）
-- `ACE_TOOL_DEBUG_VERBOSE=1`：输出更详细的帧解析日志
-- `ACE_TOOL_DEBUG_FILE=<path>`：调试日志路径，默认 `%TEMP%\ace-tool-mcp.log`
-
-默认行为：`enhance_prompt` 会弹 Win32 窗口并等待用户点击后返回。
+```powershell
+# 在仓库根目录
+cargo run -- --base-url <URL> --token <TOKEN> [--enable-log]
+```
 
 ## npm 打包与发布
 
@@ -167,7 +149,7 @@ npm publish --access public
 
 ## 项目结构
 
-```
+```text
 ace-tool-windows/
 - Cargo.toml
 - package.json
@@ -256,4 +238,3 @@ Apache-2.0
 ## 致谢
 
 - 原项目：ace-tool（https://github.com/eastxiaodong/ace-tool）
-

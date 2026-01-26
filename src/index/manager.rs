@@ -12,15 +12,19 @@ use std::time::Duration;
 use tokio::time::sleep;
 use walkdir::WalkDir;
 
+/// 单个 blob 的最大字节数，过大会被跳过。
 const MAX_BLOB_SIZE: usize = 500 * 1024;
+/// 单次上传批次的最大字节数。
 const MAX_BATCH_SIZE: usize = 5 * 1024 * 1024;
 
+/// 可上传的文件片段（按行切分）。
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Blob {
   pub path: String,
   pub content: String,
 }
 
+/// 索引结果与统计信息的返回结构。
 #[derive(Clone, Debug)]
 pub struct IndexResult {
   pub status: String,
@@ -29,6 +33,7 @@ pub struct IndexResult {
   pub stats: Option<IndexStats>,
 }
 
+/// 索引统计信息（用于调试或前端展示）。
 #[derive(Clone, Debug)]
 pub struct IndexStats {
   #[allow(dead_code)]
@@ -41,6 +46,7 @@ pub struct IndexStats {
   pub failed_batches: Option<usize>,
 }
 
+/// 上传策略：按规模动态调整批次与并发。
 #[derive(Clone, Debug)]
 struct UploadStrategy {
   batch_size: usize,
@@ -50,6 +56,7 @@ struct UploadStrategy {
   scale_name: &'static str,
 }
 
+/// 索引与检索的核心管理器。
 pub struct IndexManager {
   project_root: PathBuf,
   base_url: String,
@@ -63,6 +70,7 @@ pub struct IndexManager {
 }
 
 impl IndexManager {
+  /// 初始化索引管理器并创建 HTTP 客户端。
   pub fn new(
     project_root: PathBuf,
     base_url: String,
@@ -98,6 +106,7 @@ impl IndexManager {
     })
   }
 
+  /// 入口方法：先索引，再调用检索 API。
   pub async fn search_context(&self, query: &str) -> String {
     let index_result = self.index_project().await;
     if index_result.status == "error" {
@@ -145,6 +154,7 @@ impl IndexManager {
     }
   }
 
+  /// 索引整个项目并上传新增 blob。
   pub async fn index_project(&self) -> IndexResult {
     let blobs = self.collect_files().await;
     if blobs.is_empty() {
@@ -341,6 +351,7 @@ impl IndexManager {
     }
   }
 
+  /// 遍历项目并切分为可上传的 blob。
   async fn collect_files(&self) -> Vec<Blob> {
     let gitignore = load_gitignore(&self.project_root);
     let mut blobs = Vec::new();
@@ -398,6 +409,7 @@ impl IndexManager {
     blobs
   }
 
+  /// 从 `.ace-tool/index.json` 读取已上传的 blob 名称。
   pub fn load_index(&self) -> Vec<String> {
     if !self.index_file_path.exists() {
       return Vec::new();
@@ -406,6 +418,7 @@ impl IndexManager {
     serde_json::from_str::<Vec<String>>(&content).unwrap_or_default()
   }
 
+  /// 保存 blob 名称索引到本地文件。
   fn save_index(&self, blob_names: Vec<String>) -> Result<(), String> {
     if let Some(parent) = self.index_file_path.parent() {
       let _ = fs::create_dir_all(parent);
@@ -415,6 +428,7 @@ impl IndexManager {
     Ok(())
   }
 
+  /// 对网络请求进行指数退避重试。
   async fn retry_request<F, Fut, T>(&self, mut operation: F) -> Result<T, String>
   where
     F: FnMut() -> Fut,
@@ -465,6 +479,7 @@ impl IndexManager {
   }
 }
 
+/// 单批上传的结果结构。
 #[derive(Debug)]
 struct UploadBatchResult {
   success: bool,
@@ -474,6 +489,7 @@ struct UploadBatchResult {
   fatal: bool,
 }
 
+/// 上传一个批次，并将失败项返回用于重试。
 async fn upload_batch(
   client: Client,
   url: String,
@@ -552,6 +568,7 @@ async fn upload_batch(
   }
 }
 
+/// 根据 blob 数量选择上传策略。
 fn get_upload_strategy(blob_count: usize) -> UploadStrategy {
   if blob_count < 100 {
     UploadStrategy {
@@ -584,6 +601,7 @@ fn get_upload_strategy(blob_count: usize) -> UploadStrategy {
   }
 }
 
+/// 计算 blob 的稳定哈希名（路径 + 内容）。
 fn calculate_blob_name(path: &str, content: &str) -> String {
   let mut hasher = Sha256::new();
   hasher.update(path.as_bytes());
@@ -592,6 +610,7 @@ fn calculate_blob_name(path: &str, content: &str) -> String {
   digest.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+/// 清理不可见控制字符，避免服务端解析失败。
 fn sanitize_content(content: &str) -> String {
   content
     .chars()
@@ -602,6 +621,7 @@ fn sanitize_content(content: &str) -> String {
     .collect()
 }
 
+/// 简单二进制判定：非可见字符比例过高则视为二进制。
 fn is_binary_content(content: &str) -> bool {
   let mut non_printable = 0usize;
   for ch in content.chars() {
@@ -614,6 +634,7 @@ fn is_binary_content(content: &str) -> bool {
   (non_printable as f32 / total as f32) > 0.1
 }
 
+/// 按行切分文件内容，生成多个 blob。
 fn split_file_content(path: &str, content: &str, max_lines: usize) -> Vec<Blob> {
   let bytes = content.as_bytes();
   let mut lines: Vec<String> = Vec::new();
@@ -667,6 +688,7 @@ fn split_file_content(path: &str, content: &str, max_lines: usize) -> Vec<Blob> 
   blobs
 }
 
+/// 判断路径是否应被忽略（gitignore + 自定义规则）。
 fn should_exclude_path(
   path: &Path,
   is_dir: bool,
@@ -701,10 +723,12 @@ fn should_exclude_path(
   false
 }
 
+/// 统一路径分隔符为 `/`，便于跨平台比较。
 fn normalize_path(path: &Path) -> String {
   path.to_string_lossy().replace('\\', "/")
 }
 
+/// 简单通配符匹配（支持 `*` 与 `?`）。
 fn wildcard_match(text: &str, pattern: &str) -> bool {
   let t = text.as_bytes();
   let p = pattern.as_bytes();

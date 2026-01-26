@@ -18,7 +18,8 @@ use tokio::runtime::Runtime;
 use tokio::time::timeout;
 use ui::session::{run_prompt_session, ContinueCallback, SessionAction};
 
-fn main() -> std::io::Result<()> {
+/// 程序入口：初始化配置、工具列表与 MCP 服务端。
+fn main() -> std::io::Result<()> {
   let config = match config::init_config() {
     Ok(cfg) => cfg,
     Err(err) => {
@@ -44,7 +45,8 @@ fn main() -> std::io::Result<()> {
   server.run()
 }
 
-fn handle_tool_call(
+/// MCP 工具分发器，根据工具名路由到具体处理函数。
+fn handle_tool_call(
   name: &str,
   args: Option<serde_json::Value>,
   config: &Arc<Config>,
@@ -57,7 +59,10 @@ fn handle_tool_call(
   }
 }
 
-fn handle_search_context(
+/// `search_context` 的处理入口。
+/// 
+/// 负责校验参数、准备索引管理器并执行检索。
+fn handle_search_context(
   args: Option<serde_json::Value>,
   config: &Arc<Config>,
   runtime: &Arc<Runtime>,
@@ -102,6 +107,9 @@ fn handle_search_context(
   Ok(result)
 }
 
+/// `enhance_prompt` 的处理入口。
+/// 
+/// 负责校验参数、调用远端增强服务，并通过 UI 让用户确认返回内容。
 fn handle_enhance_prompt(
   args: Option<serde_json::Value>,
   config: &Arc<Config>,
@@ -143,6 +151,7 @@ fn handle_enhance_prompt(
     .map_err(|e| format!("Error: {e}"))?;
 
   log_debug("enhance_prompt: calling enhancer".to_string());
+  // UI 等待时间主要用于用户交互，接口超时用于避免网络请求卡死。
   let ui_timeout = Duration::from_secs(8 * 60);
   let enhance_timeout = Duration::from_secs(90);
   let current_prompt = match runtime.block_on(async {
@@ -195,7 +204,8 @@ fn handle_enhance_prompt(
   }
 }
 
-fn build_mcp_sender(logger: McpLogger) -> logging::McpLogSender {
+/// 构造 MCP logging 通道的发送闭包。
+fn build_mcp_sender(logger: McpLogger) -> logging::McpLogSender {
   Arc::new(move |level, message| {
     let level_str = match level {
       LogLevel::Debug => "debug",

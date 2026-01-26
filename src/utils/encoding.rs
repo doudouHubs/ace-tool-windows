@@ -3,6 +3,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+/// 尝试多种编码读取文件内容，优先选择“最少乱码”的结果。
 pub fn read_file_with_encoding(path: &Path) -> io::Result<String> {
   let bytes = fs::read(path)?;
   let encodings = [UTF_8, GBK, GB18030, WINDOWS_1252];

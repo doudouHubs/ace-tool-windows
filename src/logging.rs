@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+/// 日志级别，用于 MCP logging 与文件日志。
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub enum LogLevel {
@@ -14,6 +15,7 @@ pub enum LogLevel {
 }
 
 impl LogLevel {
+  /// 获取可读的级别字符串。
   #[allow(dead_code)]
   fn as_str(&self) -> &'static str {
     match self {
@@ -25,8 +27,10 @@ impl LogLevel {
   }
 }
 
+/// MCP logging 通道发送器。
 pub type McpLogSender = Arc<dyn Fn(LogLevel, &str) + Send + Sync>;
 
+/// 全局日志状态（MCP sender + 文件句柄）。
 struct LoggerState {
   mcp_sender: Option<McpLogSender>,
   file: Option<File>,
@@ -39,11 +43,13 @@ static LOGGER: Mutex<LoggerState> = Mutex::new(LoggerState {
   log_file_path: None,
 });
 
+/// 初始化 MCP logging 发送器。
 pub fn init_mcp_logger(sender: McpLogSender) {
   let mut state = LOGGER.lock().unwrap();
   state.mcp_sender = Some(sender);
 }
 
+/// 在项目目录下启用文件日志（.ace-tool/ace-tool.log）。
 pub fn enable_file_log(project_root: &Path) -> io::Result<()> {
   let ace_dir = project_root.join(".ace-tool");
   fs::create_dir_all(&ace_dir)?;
@@ -73,6 +79,7 @@ pub fn enable_file_log(project_root: &Path) -> io::Result<()> {
 }
 
 #[allow(dead_code)]
+/// 发送日志到 MCP 与本地文件。
 pub fn send_log(level: LogLevel, message: &str) {
   let mut state = LOGGER.lock().unwrap();
 
@@ -89,11 +96,13 @@ pub fn send_log(level: LogLevel, message: &str) {
 }
 
 #[allow(dead_code)]
+/// 关闭文件日志句柄。
 pub fn close_log() {
   let mut state = LOGGER.lock().unwrap();
   state.file = None;
 }
 
+/// 格式化时间戳。
 fn format_timestamp(time: SystemTime) -> String {
   let datetime: chrono::DateTime<chrono::Local> = time.into();
   datetime.format("%Y-%m-%d %H:%M:%S").to_string()

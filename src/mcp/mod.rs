@@ -7,8 +7,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod schemas;
 
+/// MCP 工具处理器：输入工具名与参数，返回文本或错误信息。
 pub type ToolHandler = Arc<dyn Fn(&str, Option<Value>) -> Result<String, String> + Send + Sync>;
 
+/// MCP stdio 服务器：负责读取请求、分发处理并写回响应。
 pub struct McpServer {
   tools: Vec<Value>,
   handler: ToolHandler,
@@ -16,12 +18,14 @@ pub struct McpServer {
   frame_mode: Arc<Mutex<FrameMode>>,
 }
 
+/// MCP logging 的发送器，复用同一个 stdout 通道。
 #[derive(Clone)]
 pub struct McpLogger {
   writer: Arc<Mutex<Box<dyn Write + Send>>>,
 }
 
 impl McpServer {
+  /// 创建 MCP 服务器并保存工具列表与处理器。
   pub fn new(tools: Vec<Value>, handler: ToolHandler) -> Self {
     log_debug("mcp: server init".to_string());
     let writer: Box<dyn Write + Send> = Box::new(io::stdout());
@@ -33,12 +37,14 @@ impl McpServer {
     }
   }
 
+  /// 构造日志发送器，复用相同的输出通道。
   pub fn logger(&self) -> McpLogger {
     McpLogger {
       writer: self.writer.clone(),
     }
   }
 
+  /// 主循环：读取请求、解析、处理并返回响应。
   pub fn run(&self) -> io::Result<()> {
     let stdin = io::stdin();
     let mut reader = io::BufReader::new(stdin.lock());
@@ -80,11 +86,13 @@ impl McpServer {
   }
 
   #[allow(dead_code)]
+  /// 主动发送 logging/message（通常用于调试）。
   pub fn send_log(&self, level: &str, data: &str) {
     let logger = self.logger();
     logger.send(level, data);
   }
 
+  /// 根据 method 处理 MCP 请求，返回响应 JSON（通知类返回 None）。
   fn handle_message(&self, message: &Value) -> Option<Value> {
     let method = message.get("method").and_then(|v| v.as_str()).unwrap_or("");
     let id = match message.get("id") {
@@ -151,6 +159,7 @@ impl McpServer {
     }
   }
 
+  /// 按当前帧格式写回响应（JSON 行或 Content-Length）。
   fn write_message(&self, message: &Value) -> io::Result<()> {
     let mut writer = self.writer.lock().unwrap();
     let data = serde_json::to_vec(message).map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
@@ -178,6 +187,7 @@ impl McpServer {
     Ok(())
   }
 
+  /// 根据对端格式更新响应帧模式，保证往返一致。
   fn update_frame_mode(&self, mode: FrameMode) {
     if mode == FrameMode::Unknown {
       return;
@@ -191,6 +201,7 @@ impl McpServer {
 }
 
 impl McpLogger {
+  /// 发送 MCP logging/message 通知。
   pub fn send(&self, level: &str, data: &str) {
     let payload = json!({
       "jsonrpc": "2.0",
@@ -213,6 +224,7 @@ impl McpLogger {
 }
 
 #[derive(Debug, Clone, Copy)]
+/// MCP method 的分类，用于路由。
 enum MethodKind {
   Initialize,
   ListTools,
@@ -222,12 +234,14 @@ enum MethodKind {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// 读写帧格式：Content-Length 或 JSON 单行。
 enum FrameMode {
   ContentLength,
   JsonLine,
   Unknown,
 }
 
+/// 将 method 名归类为已知类型，便于统一处理。
 fn classify_method(method: &str) -> MethodKind {
   let normalized = method.to_ascii_lowercase();
   match normalized.as_str() {
@@ -249,6 +263,7 @@ const SUPPORTED_PROTOCOL_VERSIONS: [&str; 5] = [
   "2024-10-07",
 ];
 
+/// 根据客户端传入的协议版本选择一个支持的版本。
 fn select_protocol_version(params: Option<&Value>) -> String {
   let requested = params
     .and_then(|value| value.get("protocolVersion"))
@@ -261,6 +276,7 @@ fn select_protocol_version(params: Option<&Value>) -> String {
   DEFAULT_PROTOCOL_VERSION.to_string()
 }
 
+/// 输出调试日志（stderr + 可选文件）。
 pub(crate) fn log_debug(message: String) {
   if is_debug_enabled() {
     eprintln!("{message}");
@@ -268,6 +284,7 @@ pub(crate) fn log_debug(message: String) {
   }
 }
 
+/// 判断是否启用调试日志。
 fn is_debug_enabled() -> bool {
   static DEBUG: OnceLock<bool> = OnceLock::new();
   *DEBUG.get_or_init(|| {
@@ -280,6 +297,7 @@ fn is_debug_enabled() -> bool {
   })
 }
 
+/// 输出更详细的调试日志（需开启 verbose）。
 pub(crate) fn log_debug_verbose(message: String) {
   if is_debug_enabled() && is_debug_verbose_enabled() {
     eprintln!("{message}");
@@ -287,6 +305,7 @@ pub(crate) fn log_debug_verbose(message: String) {
   }
 }
 
+/// 判断是否启用详细调试日志。
 fn is_debug_verbose_enabled() -> bool {
   static VERBOSE: OnceLock<bool> = OnceLock::new();
   *VERBOSE.get_or_init(|| {
@@ -299,6 +318,7 @@ fn is_debug_verbose_enabled() -> bool {
   })
 }
 
+/// 将调试日志追加到文件（若已开启）。
 fn log_debug_to_file(message: &str) {
   if let Some(writer) = debug_log_writer() {
     let timestamp = SystemTime::now()
@@ -314,6 +334,7 @@ fn log_debug_to_file(message: &str) {
   }
 }
 
+/// 对调试预览做简单清洗，避免控制字符污染日志。
 fn sanitize_preview(input: &str, max_len: usize) -> String {
   let mut out = String::new();
   for ch in input.chars().take(max_len) {
@@ -337,6 +358,7 @@ fn sanitize_preview(input: &str, max_len: usize) -> String {
   out
 }
 
+/// 获取日志文件写入器（按需初始化）。
 fn debug_log_writer() -> Option<&'static Mutex<std::fs::File>> {
   static LOG_FILE: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
   LOG_FILE.get_or_init(|| {
@@ -358,6 +380,7 @@ fn debug_log_writer() -> Option<&'static Mutex<std::fs::File>> {
   .as_ref()
 }
 
+/// 从 params 中提取工具名与参数对象。
 fn extract_tool_call_params(params: Option<&Value>) -> (String, Option<Value>) {
   let params = match params {
     Some(value) => value,
@@ -369,6 +392,7 @@ fn extract_tool_call_params(params: Option<&Value>) -> (String, Option<Value>) {
   (name, args)
 }
 
+/// 构造 JSON-RPC 错误响应。
 fn error_response(id: Value, code: i32, message: &str) -> Value {
   json!({
     "jsonrpc": "2.0",
@@ -380,6 +404,7 @@ fn error_response(id: Value, code: i32, message: &str) -> Value {
   })
 }
 
+/// 读取一条 MCP 消息，兼容 JSON 行与 Content-Length 两种格式。
 fn read_message(reader: &mut dyn BufRead) -> io::Result<Option<(Value, FrameMode)>> {
   let mut first_line = String::new();
   let bytes_read = reader.read_line(&mut first_line)?;
@@ -461,6 +486,7 @@ fn read_message(reader: &mut dyn BufRead) -> io::Result<Option<(Value, FrameMode
   }
 }
 
+/// 从 `Content-Length` 头中解析长度。
 fn parse_content_length(line: &str) -> Option<usize> {
   let parts: Vec<&str> = line.split(':').collect();
   if parts.len() < 2 {

@@ -1,9 +1,11 @@
 ﻿use serde_json::{json, Value};
 
+/// MCP 工具清单（用于 `tools/list`）。
 pub fn tool_list() -> Vec<Value> {
   vec![search_context_tool(), enhance_prompt_tool()]
 }
 
+/// `search_context` 工具的 schema 定义。
 fn search_context_tool() -> Value {
   json!({
     "name": "search_context",
@@ -25,6 +27,7 @@ fn search_context_tool() -> Value {
   })
 }
 
+/// `enhance_prompt` 工具的 schema 定义。
 fn enhance_prompt_tool() -> Value {
   json!({
     "name": "enhance_prompt",
