@@ -12,22 +12,22 @@ use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM, RECT, COLORREF, GetLastError};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::WC_EDITW;
-use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+use windows::Win32::UI::Controls::{WC_EDITW, EM_SETSEL};
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetKeyState, SetFocus, VK_CONTROL, VK_RETURN};
 use windows::Win32::UI::WindowsAndMessaging::{
-  CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, LoadCursorW, PostQuitMessage,
+  CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, LoadCursorW, PostQuitMessage, CreateAcceleratorTableW, DestroyAcceleratorTable, TranslateAcceleratorW, CallWindowProcW, GetParent,
   RegisterClassW, SetTimer, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
-  CW_USEDEFAULT, HMENU, MSG, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_TIMER, WNDCLASSW,
+  CW_USEDEFAULT, HMENU, MSG, WM_COMMAND, WM_CREATE, WM_CLOSE, WM_KEYDOWN, WM_DESTROY, WM_TIMER, WNDCLASSW, WNDPROC,
   WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL, WS_EX_CLIENTEDGE, BN_CLICKED,
-  GetWindowLongPtrW, SetWindowLongPtrW, GWLP_USERDATA, GetWindowTextLengthW, GetWindowTextW,
+  GetWindowLongPtrW, SetWindowLongPtrW, GWLP_USERDATA, GWLP_WNDPROC, GetWindowTextLengthW, GetWindowTextW,
   ES_AUTOVSCROLL, ES_MULTILINE, WINDOW_STYLE, SetWindowPos, SetWindowTextW, HWND_TOPMOST,
   HWND_NOTOPMOST, SWP_NOMOVE, SWP_NOSIZE, SendMessageW, WM_SETFONT, WM_CTLCOLORDLG,
   WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_CTLCOLORBTN, BS_FLAT, WM_ERASEBKGND, GetClientRect,
-  PostMessageW, WM_APP, ShowWindow, SetForegroundWindow, MessageBoxW, MB_OK, SW_SHOWNORMAL,
+  PostMessageW, WM_APP, ShowWindow, SetForegroundWindow, MessageBoxW, MB_OK, SW_RESTORE, ACCEL, FCONTROL, FVIRTKEY,
 };
 use windows::Win32::Graphics::Gdi::{
   CreateFontW, CreateSolidBrush, DeleteObject, FillRect, SetBkColor, SetBkMode, SetTextColor,
-  HBRUSH, HDC, HFONT, TRANSPARENT, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_QUALITY,
+  HBRUSH, HDC, HFONT, OPAQUE, TRANSPARENT, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_QUALITY,
   FF_DONTCARE, FW_NORMAL, OUT_DEFAULT_PRECIS,
 };
 const ID_BTN_SEND: usize = 1001;
@@ -51,6 +51,8 @@ struct CreateParams {
 struct WindowState {
   sender: Sender<SessionAction>,
   edit: HWND,
+
+  edit_proc: isize,
   pin_button: HWND,
   countdown_label: HWND,
   pinned: bool,
@@ -60,6 +62,7 @@ struct WindowState {
   btn_original: HWND,
   btn_send: HWND,
   is_enhancing: bool,
+  action_sent: bool,
   start_at: Instant,
   timeout_ms: u32,
   bg_brush: HBRUSH,
@@ -129,14 +132,43 @@ pub fn run_prompt_window(
     }
 
     log_debug(format!("ui: window created hwnd={:?}", window));
-    let _ = ShowWindow(window, SW_SHOWNORMAL);
+    let _ = ShowWindow(window, SW_RESTORE);
     let _ = SetForegroundWindow(window);
 
-    let mut msg = MSG::default();
-    while GetMessageW(&mut msg, HWND(null_mut()), 0, 0).into() {
-      let _ = TranslateMessage(&msg);
-      DispatchMessageW(&msg);
-    }
+    let accel = ACCEL { fVirt: FCONTROL | FVIRTKEY, key: VK_RETURN.0 as u16, cmd: ID_BTN_SEND as u16 };
+
+
+
+    let accel_table = CreateAcceleratorTableW(&[accel]).unwrap_or_default();
+
+
+
+    let mut msg = MSG::default();
+
+
+    while GetMessageW(&mut msg, HWND(null_mut()), 0, 0).into() {
+
+
+      if TranslateAcceleratorW(window, accel_table, &msg) != 0 {
+
+
+        continue;
+
+
+      }
+
+
+      let _ = TranslateMessage(&msg);
+
+
+      DispatchMessageW(&msg);
+
+
+    }
+
+
+
+    let _ = DestroyAcceleratorTable(accel_table);
   }
 
   receiver.recv().unwrap_or(SessionAction::Timeout)
@@ -149,7 +181,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
       let createstruct = unsafe { &*(lparam.0 as *const CREATESTRUCTW) };
       let params = unsafe { Box::from_raw(createstruct.lpCreateParams as *mut CreateParams) };
 
-      let pinned = load_pin_state();
+      let pinned = if pin_state_path().exists() { load_pin_state() } else { true };
       let pin_label = if pinned { "📌" } else { "📍" };
       let pin_button = create_button(hwnd, pin_label, 820, 16, 44, 32, ID_BTN_PIN, true);
       let countdown_text = format!("剩余时间 {}", format_remaining(params.timeout_ms));
@@ -218,6 +250,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
       let state = Box::new(WindowState {
         sender: params.sender,
         edit,
+
+        edit_proc: 0,
         pin_button,
         countdown_label,
         pinned,
@@ -227,6 +261,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         btn_original,
         btn_send,
         is_enhancing: false,
+        action_sent: false,
         start_at: Instant::now(),
         timeout_ms: params.timeout_ms,
         bg_brush,
@@ -234,10 +269,15 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         font,
       });
 
+      let state_ptr = Box::into_raw(state);
+
       unsafe {
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, Box::into_raw(state) as isize);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
+        let edit_proc = SetWindowLongPtrW(edit, GWLP_WNDPROC, edit_wnd_proc as isize);
+        (*state_ptr).edit_proc = edit_proc;
         SetTimer(hwnd, ID_TIMER_TIMEOUT, params.timeout_ms, None);
         SetTimer(hwnd, ID_TIMER_COUNTDOWN, 1000, None);
+        let _ = SetFocus(btn_send);
         if pinned {
           let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
         }
@@ -315,6 +355,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
           },
           _ => SessionAction::Timeout,
         };
+        state.action_sent = true;
         let _ = state.sender.send(action);
         unsafe { let _ = DestroyWindow(hwnd); };
         return LRESULT(0);
@@ -325,6 +366,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
       let timer_id = wparam.0 as usize;
       if timer_id == ID_TIMER_TIMEOUT {
         let state = unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
+        state.action_sent = true;
         let _ = state.sender.send(SessionAction::Timeout);
         unsafe { let _ = DestroyWindow(hwnd); };
       } else if timer_id == ID_TIMER_COUNTDOWN {
@@ -336,6 +378,29 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
       }
       LRESULT(0)
     }
+    WM_CLOSE => {
+
+      let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState };
+
+      if !ptr.is_null() {
+
+        let state = unsafe { &mut *ptr };
+
+        if !state.action_sent {
+
+          state.action_sent = true;
+
+          let _ = state.sender.send(SessionAction::EndConversation);
+
+        }
+
+      }
+
+      unsafe { let _ = DestroyWindow(hwnd); };
+
+      LRESULT(0)
+
+    }
     WM_APP_ENHANCE_SUCCESS => {
       let state = unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
       let text = unsafe { Box::from_raw(lparam.0 as *mut String) };
@@ -372,7 +437,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
       let state = unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
       let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
       unsafe {
-        SetBkMode(hdc, TRANSPARENT);
+        SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, rgb(48, 48, 48));
         SetBkColor(hdc, rgb(245, 246, 248));
       }
@@ -382,7 +447,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
       let state = unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
       let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
       unsafe {
-        SetBkMode(hdc, TRANSPARENT);
+        SetBkMode(hdc, OPAQUE);
         SetTextColor(hdc, rgb(32, 32, 32));
         SetBkColor(hdc, rgb(255, 255, 255));
       }
@@ -392,6 +457,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
       let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState };
       if !ptr.is_null() {
         let state = unsafe { Box::from_raw(ptr) };
+        if !state.action_sent {
+          let _ = state.sender.send(SessionAction::EndConversation);
+        }
         unsafe {
           let _ = DeleteObject(state.bg_brush);
           let _ = DeleteObject(state.edit_brush);
@@ -405,6 +473,31 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
   }
 }
 
+unsafe extern "system" fn edit_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+  if msg == WM_KEYDOWN {
+    let ctrl_down = unsafe { ((GetKeyState(VK_CONTROL.0 as i32) as u16) & 0x8000) != 0 };
+    if ctrl_down && (wparam.0 as u32) == 'A' as u32 {
+      let _ = unsafe { SendMessageW(hwnd, EM_SETSEL, WPARAM(0), LPARAM(-1)) };
+      return LRESULT(0);
+    }
+  }
+  let parent = unsafe { GetParent(hwnd).ok() };
+  if let Some(parent) = parent {
+    if !parent.0.is_null() {
+      let state_ptr = unsafe { GetWindowLongPtrW(parent, GWLP_USERDATA) as *mut WindowState };
+      if !state_ptr.is_null() {
+        let prev = unsafe { (*state_ptr).edit_proc };
+        if prev != 0 {
+          let proc: WNDPROC = unsafe { core::mem::transmute(prev) };
+          return unsafe { CallWindowProcW(proc, hwnd, msg, wparam, lparam) };
+        }
+      }
+    }
+  }
+
+
+  unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
 /// 创建按钮控件。
 fn create_button(hwnd: HWND, text: &str, x: i32, y: i32, width: i32, height: i32, id: usize, flat: bool) -> HWND {
   unsafe {

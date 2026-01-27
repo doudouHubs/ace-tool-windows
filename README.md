@@ -61,7 +61,7 @@ ace-tool-win --base-url <URL> --token <TOKEN> [--enable-log]
 }
 ```
 
-配置完成后，在 AI CLI 中输入 `xxxxx -enhance` 即可触发 `enhance_prompt`（同样支持 `-enhancer`）。
+配置完成后，在 AI CLI 中输入 `xxxxx -enhancer` 即可触发 `enhance_prompt`（同样支持 `-enhancer`）。
 
 ## 项目简介
 
