@@ -1,6 +1,6 @@
 {
   "name": "ace-tool-windows",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "ACE MCP server for Windows (Win32)",
   "bin": {
     "ace-tool-win": "bin/ace-tool-win.exe"

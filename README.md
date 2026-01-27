@@ -1,6 +1,7 @@
 ﻿# ace-tool-windows
 
 Rust + Win32 的 MCP Server（stdio），提供 `search_context` 与 `enhance_prompt`，用原生 Win32 GUI 替代浏览器交互。
+![alt text](image.png)
 
 > 原项目：https://github.com/eastxiaodong/ace-tool
 
@@ -29,7 +30,7 @@ ace-tool-win --base-url <URL> --token <TOKEN> [--enable-log]
   "mcpServers": {
     "ace-tool-windows": {
       "command": "ace-tool-win",
-      "args": ["--base-url", "<URL>", "--token", "<TOKEN>", "--enable-log"]
+      "args": ["--base-url", "https://acemcp.heroman.wtf/relay/", "--token", "<TOKEN>"]
     }
   }
 }
@@ -61,6 +62,31 @@ ace-tool-win --base-url <URL> --token <TOKEN> [--enable-log]
 }
 ```
 
+### 常见客户端配置示例
+
+以下仅展示配置片段，具体放置位置以对应客户端文档为准。
+
+**Claude Code**
+
+```json
+{
+  "mcpServers": {
+    "ace-tool-windows": {
+      "command": "ace-tool-win",
+      "args": ["--base-url", "https://acemcp.heroman.wtf/relay/", "--token", "<TOKEN>"]
+    }
+  }
+}
+```
+
+**Codex CLI（codex）**
+
+```toml
+[mcpServers."ace-tool-windows"]
+command = "ace-tool-win"
+args = ["--base-url", "https://acemcp.heroman.wtf/relay/", "--token", "<TOKEN>"]
+```
+
 配置完成后，在 AI CLI 中输入 `xxxxx -enhancer` 即可触发 `enhance_prompt`（同样支持 `-enhancer`）。
 
 ## 项目简介
@@ -86,7 +112,7 @@ ace-tool-win --base-url <URL> --token <TOKEN> [--enable-log]
 ### CLI 参数
 
 - `--base-url` 必填，服务地址；未写协议会自动补 `https://`
-- `--token` 必填，ACE 服务 Token
+- `--token` 必填，ACE 服务 Token（在 https://acemcp.heroman.wtf 获取）
 - `--enable-log` 可选，写入 `.ace-tool/ace-tool.log`
 
 ### 环境变量（可选）
