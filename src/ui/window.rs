@@ -95,7 +95,7 @@ pub fn run_prompt_window(
 
     let atom = RegisterClassW(&wnd_class);
     if atom == 0 {
-      log_debug(format!("ui: register class failed err={} ", unsafe { GetLastError().0 }));
+      log_debug(format!("ui: register class failed err={} ", GetLastError().0));
     } else {
       log_debug("ui: register class ok".to_string());
     }
@@ -124,13 +124,13 @@ pub fn run_prompt_window(
     .unwrap_or(HWND(null_mut()));
 
     if window.0.is_null() {
-      log_debug(format!("ui: create window failed err={}", unsafe { GetLastError().0 }));
+      log_debug(format!("ui: create window failed err={}", GetLastError().0));
       return SessionAction::Timeout;
     }
 
     log_debug(format!("ui: window created hwnd={:?}", window));
-    let _ = unsafe { ShowWindow(window, SW_SHOWNORMAL) };
-    let _ = unsafe { SetForegroundWindow(window) };
+    let _ = ShowWindow(window, SW_SHOWNORMAL);
+    let _ = SetForegroundWindow(window);
 
     let mut msg = MSG::default();
     while GetMessageW(&mut msg, HWND(null_mut()), 0, 0).into() {
@@ -183,11 +183,12 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
           | (ES_MULTILINE as u32)
           | (ES_AUTOVSCROLL as u32),
       );
-      let edit = unsafe {
-        CreateWindowExW(
-          WS_EX_CLIENTEDGE,
-          WC_EDITW,
-          PCWSTR(to_wstring(&params.prompt).as_ptr()),
+      let initial_text = normalize_windows_newlines(&params.prompt);
+      let edit = unsafe {
+        CreateWindowExW(
+          WS_EX_CLIENTEDGE,
+          WC_EDITW,
+          PCWSTR(to_wstring(&initial_text).as_ptr()),
           edit_style,
           20,
           60,
@@ -336,9 +337,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
       LRESULT(0)
     }
     WM_APP_ENHANCE_SUCCESS => {
-      let state = unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
-      let text = unsafe { Box::from_raw(lparam.0 as *mut String) };
-      let _ = unsafe { SetWindowTextW(state.edit, PCWSTR(to_wstring(&text).as_ptr())) };
+      let state = unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
+      let text = unsafe { Box::from_raw(lparam.0 as *mut String) };
+      let normalized = normalize_windows_newlines(&text);
+      let _ = unsafe { SetWindowTextW(state.edit, PCWSTR(to_wstring(&normalized).as_ptr())) };
       state.is_enhancing = false;
       set_loading(state, false);
       LRESULT(0)
@@ -467,8 +469,30 @@ fn read_edit_text(hwnd: HWND) -> String {
 
 /// 将 Rust 字符串转换为 Win32 宽字符串（以 0 结尾）。
 fn to_wstring(input: &str) -> Vec<u16> {
-  OsStr::new(input).encode_wide().chain(std::iter::once(0)).collect()
-}
+  OsStr::new(input).encode_wide().chain(std::iter::once(0)).collect()
+}
+
+fn normalize_windows_newlines(input: &str) -> String {
+  let mut out = String::with_capacity(input.len() + 8);
+  let mut chars = input.chars().peekable();
+  while let Some(ch) = chars.next() {
+    match ch {
+      '\r' => {
+        if matches!(chars.peek(), Some('\n')) {
+          chars.next();
+        }
+        out.push('\r');
+        out.push('\n');
+      }
+      '\n' => {
+        out.push('\r');
+        out.push('\n');
+      }
+      _ => out.push(ch),
+    }
+  }
+  out
+}
 
 fn loword(value: u32) -> u16 {
   (value & 0xFFFF) as u16

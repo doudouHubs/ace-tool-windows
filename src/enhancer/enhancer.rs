@@ -49,7 +49,8 @@ impl PromptEnhancer {
   }
 
   /// 直接调用远端 prompt enhancer API。
-  &self,
+  pub async fn call_prompt_enhancer_api(
+    &self,
     original_prompt: &str,
     conversation_history: &str,
     blob_names: &[String],
