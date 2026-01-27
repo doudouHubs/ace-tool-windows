@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::time::timeout;
-use ui::session::{run_prompt_session, ContinueCallback, SessionAction};
+use ui::session::{run_prompt_session, ContinueCallback, SessionAction, is_headless_mode};
 
 /// 程序入口：初始化配置、工具列表与 MCP 服务端。
 fn main() -> std::io::Result<()> {
@@ -150,60 +150,89 @@ fn handle_enhance_prompt(
   let enhancer = PromptEnhancer::new(manager, config.base_url.clone(), config.token.clone())
     .map_err(|e| format!("Error: {e}"))?;
 
-  log_debug("enhance_prompt: calling enhancer".to_string());
-  // UI 等待时间主要用于用户交互，接口超时用于避免网络请求卡死。
-  let ui_timeout = Duration::from_secs(8 * 60);
-  let enhance_timeout = Duration::from_secs(90);
-  let current_prompt = match runtime.block_on(async {
-    timeout(enhance_timeout, enhancer.enhance(prompt, history)).await
-  }) {
-    Ok(Ok(text)) => text,
-    Ok(Err(err)) => {
-      if err.to_lowercase().contains("timeout") {
-        return Ok(format!(
-          "Enhancement timed out (8 minutes). Using original prompt: {}",
-          prompt
-        ));
-      }
-      return Err(err);
-    }
-    Err(_) => {
-      log_debug("enhance_prompt: api timeout".to_string());
-      return Ok(format!("Enhancement timed out (90 seconds). Using original prompt: {}", prompt));
-    }
-  };
-  log_debug("enhance_prompt: enhancer returned".to_string());
-
-  let enhancer = Arc::new(enhancer);
-  let runtime = runtime.clone();
-  let history = history.to_string();
-  let continue_cb: ContinueCallback = Arc::new(move |current: String| {
-    log_debug("enhance_prompt: continue requested".to_string());
-    let blobs = enhancer.load_blob_names();
-    runtime.block_on(enhancer.call_prompt_enhancer_api(&current, &history, &blobs))
-  });
-
-  log_debug("enhance_prompt: opening ui".to_string());
-  match run_prompt_session(&current_prompt, ui_timeout, continue_cb) {
-    SessionAction::UseEnhanced(content) => {
-      log_debug("enhance_prompt: ui action=use_enhanced".to_string());
-      Ok(content)
-    }
-    SessionAction::UseOriginal => {
-      log_debug("enhance_prompt: ui action=use_original".to_string());
-      Ok(prompt.to_string())
-    }
-    SessionAction::EndConversation => {
-      log_debug("enhance_prompt: ui action=end_conversation".to_string());
-      Ok("__END_CONVERSATION__".to_string())
-    }
-    SessionAction::Timeout => {
-      log_debug("enhance_prompt: ui action=timeout, fallback=enhanced".to_string());
-      Ok(current_prompt.clone())
-    }
-  }
-}
+  // UI 等待时间主要用于用户交互，接口超时用于避免网络请求卡死。
+  let ui_timeout = Duration::from_secs(8 * 60);
+  let enhance_timeout = Duration::from_secs(90);
 
+  if is_headless_mode() {
+    log_debug("enhance_prompt: headless mode enabled".to_string());
+    let current_prompt = match runtime.block_on(async {
+      timeout(enhance_timeout, enhancer.enhance(prompt, history)).await
+    }) {
+      Ok(Ok(text)) => text,
+      Ok(Err(err)) => {
+        if err.to_lowercase().contains("timeout") {
+          return Ok(format!(
+            "Enhancement timed out (8 minutes). Using original prompt: {}",
+            prompt
+          ));
+        }
+        return Err(err);
+      }
+      Err(_) => {
+        log_debug("enhance_prompt: api timeout".to_string());
+        return Ok(format!("Enhancement timed out (90 seconds). Using original prompt: {}", prompt));
+      }
+    };
+
+    let continue_cb: ContinueCallback = Arc::new(|current: String| Ok(current));
+    log_debug("enhance_prompt: opening ui".to_string());
+    return match run_prompt_session(&current_prompt, ui_timeout, continue_cb, false) {
+      SessionAction::UseEnhanced(content) => {
+        log_debug("enhance_prompt: ui action=use_enhanced".to_string());
+        Ok(content)
+      }
+      SessionAction::UseOriginal => {
+        log_debug("enhance_prompt: ui action=use_original".to_string());
+        Ok(prompt.to_string())
+      }
+      SessionAction::EndConversation => {
+        log_debug("enhance_prompt: ui action=end_conversation".to_string());
+        Ok("__END_CONVERSATION__".to_string())
+      }
+      SessionAction::Timeout => {
+        log_debug("enhance_prompt: ui action=timeout, fallback=enhanced".to_string());
+        Ok(current_prompt.clone())
+      }
+    };
+  }
+
+  let enhancer = Arc::new(enhancer);
+  let runtime = runtime.clone();
+  let history = history.to_string();
+  let continue_cb: ContinueCallback = Arc::new(move |current: String| {
+    log_debug("enhance_prompt: continue requested".to_string());
+    let enhancer = enhancer.clone();
+    let history = history.clone();
+    runtime.block_on(async move {
+      match timeout(enhance_timeout, enhancer.enhance(&current, &history)).await {
+        Ok(Ok(text)) => Ok(text),
+        Ok(Err(err)) => Err(err),
+        Err(_) => Err("Enhancement timed out (90 seconds).".to_string()),
+      }
+    })
+  });
+
+  log_debug("enhance_prompt: opening ui".to_string());
+  match run_prompt_session(prompt, ui_timeout, continue_cb, true) {
+    SessionAction::UseEnhanced(content) => {
+      log_debug("enhance_prompt: ui action=use_enhanced".to_string());
+      Ok(content)
+    }
+    SessionAction::UseOriginal => {
+      log_debug("enhance_prompt: ui action=use_original".to_string());
+      Ok(prompt.to_string())
+    }
+    SessionAction::EndConversation => {
+      log_debug("enhance_prompt: ui action=end_conversation".to_string());
+      Ok("__END_CONVERSATION__".to_string())
+    }
+    SessionAction::Timeout => {
+      log_debug("enhance_prompt: ui action=timeout, fallback=original".to_string());
+      Ok(prompt.to_string())
+    }
+  }
+}
 /// 构造 MCP logging 通道的发送闭包。
 fn build_mcp_sender(logger: McpLogger) -> logging::McpLogSender {
   Arc::new(move |level, message| {

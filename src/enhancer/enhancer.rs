@@ -43,11 +43,6 @@ impl PromptEnhancer {
       .map(|text| replace_tool_names(&text))
   }
 
-  /// 读取索引中的 blob 名称（用于增强 API）。
-  pub fn load_blob_names(&self) -> Vec<String> {
-    self.index_manager.load_index()
-  }
-
   /// 直接调用远端 prompt enhancer API。
   pub async fn call_prompt_enhancer_api(
     &self,

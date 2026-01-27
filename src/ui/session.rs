@@ -19,17 +19,18 @@ pub type ContinueCallback = Arc<dyn Fn(String) -> Result<String, String> + Send 
 pub fn run_prompt_session(
   enhanced_prompt: &str,
   timeout: Duration,
-  continue_cb: ContinueCallback,
+  continue_cb: ContinueCallback,
+  auto_enhance: bool,
 ) -> SessionAction {
   if is_headless_mode() {
     log_debug("enhance_prompt: headless mode enabled".to_string());
     return headless_action(enhanced_prompt);
   }
-  super::window::run_prompt_window(enhanced_prompt, timeout, continue_cb)
+  super::window::run_prompt_window(enhanced_prompt, timeout, continue_cb, auto_enhance)
 }
 
 /// 是否启用 headless（无 UI）模式。
-fn is_headless_mode() -> bool {
+pub fn is_headless_mode() -> bool {
   env::var("ACE_TOOL_HEADLESS")
     .map(|value| {
       let normalized = value.trim().to_ascii_lowercase();
