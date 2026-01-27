@@ -45,7 +45,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
   HWND_NOTOPMOST, SWP_NOMOVE, SWP_NOSIZE, SendMessageW, WM_SETFONT, WM_CTLCOLORDLG,
 
-  WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_CTLCOLORBTN, BS_FLAT, WM_ERASEBKGND, GetClientRect,
+  WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_CTLCOLORBTN, BS_FLAT, WM_ERASEBKGND, GetClientRect, BM_CLICK,
 
   PostMessageW, WM_APP, ShowWindow, SetForegroundWindow, MessageBoxW, MB_OK, SW_HIDE, SW_RESTORE, SW_SHOW, ACCEL, FCONTROL, FVIRTKEY,
 
@@ -107,6 +107,7 @@ struct WindowState {
 
 
   edit_proc: isize,
+  send_proc: isize,
 
   pin_button: HWND,
 
@@ -494,6 +495,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 
 
         edit_proc: 0,
+        send_proc: 0,
 
         pin_button,
 
@@ -540,8 +542,10 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
 
         let edit_proc = SetWindowLongPtrW(edit, GWLP_WNDPROC, edit_wnd_proc as isize);
+        let send_proc = SetWindowLongPtrW(btn_send, GWLP_WNDPROC, send_wnd_proc as isize);
 
         (*state_ptr).edit_proc = edit_proc;
+        (*state_ptr).send_proc = send_proc;
 
         SetTimer(hwnd, ID_TIMER_TIMEOUT, params.timeout_ms, None);
 
@@ -839,7 +843,6 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
       }
       LRESULT(0)
     }
-
     WM_TIMER => {
 
       let timer_id = wparam.0 as usize;
@@ -1084,6 +1087,29 @@ unsafe extern "system" fn edit_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
   }
 
 
+
+  unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+unsafe extern "system" fn send_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+  if msg == WM_KEYDOWN && (wparam.0 as u32) == VK_RETURN.0 as u32 {
+    let _ = unsafe { SendMessageW(hwnd, BM_CLICK, WPARAM(0), LPARAM(0)) };
+    return LRESULT(0);
+  }
+
+  let parent = unsafe { GetParent(hwnd).ok() };
+  if let Some(parent) = parent {
+    if !parent.0.is_null() {
+      let state_ptr = unsafe { GetWindowLongPtrW(parent, GWLP_USERDATA) as *mut WindowState };
+      if !state_ptr.is_null() {
+        let prev = unsafe { (*state_ptr).send_proc };
+        if prev != 0 {
+          let proc: WNDPROC = unsafe { core::mem::transmute(prev) };
+          return unsafe { CallWindowProcW(proc, hwnd, msg, wparam, lparam) };
+        }
+      }
+    }
+  }
 
   unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
