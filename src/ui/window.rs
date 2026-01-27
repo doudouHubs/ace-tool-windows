@@ -36,7 +36,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
   RegisterClassW, SetTimer, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
 
-  CW_USEDEFAULT, HMENU, MSG, WM_COMMAND, WM_CREATE, WM_CLOSE, WM_KEYDOWN, WM_DESTROY, WM_TIMER, WNDCLASSW, WNDPROC,
+  CW_USEDEFAULT, HMENU, MSG, WM_COMMAND, WM_CREATE, WM_CLOSE, WM_KEYDOWN, WM_DESTROY, WM_TIMER, WM_SHOWWINDOW, WNDCLASSW, WNDPROC,
   WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL, WS_EX_CLIENTEDGE, BN_CLICKED,
 
   GetWindowLongPtrW, SetWindowLongPtrW, GWLP_USERDATA, GWLP_WNDPROC, GetWindowTextLengthW, GetWindowTextW,
@@ -47,7 +47,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
   WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_CTLCOLORBTN, BS_FLAT, WM_ERASEBKGND, GetClientRect,
 
-  PostMessageW, WM_APP, ShowWindow, SetForegroundWindow, MessageBoxW, MB_OK, SW_RESTORE, ACCEL, FCONTROL, FVIRTKEY,
+  PostMessageW, WM_APP, ShowWindow, SetForegroundWindow, MessageBoxW, MB_OK, SW_HIDE, SW_RESTORE, SW_SHOW, ACCEL, FCONTROL, FVIRTKEY,
 
 };
 
@@ -111,6 +111,8 @@ struct WindowState {
   pin_button: HWND,
 
   countdown_label: HWND,
+  loading_icon: HWND,
+  loading_text: HWND,
 
   pinned: bool,
 
@@ -259,6 +261,19 @@ pub fn run_prompt_window(
     log_debug(format!("ui: window created hwnd={:?}", window));
     let _ = ShowWindow(window, SW_RESTORE);
     let _ = SetForegroundWindow(window);
+    let state_ptr = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut WindowState;
+    if !state_ptr.is_null() {
+      let pinned = (*state_ptr).pinned;
+      let _ = SetWindowPos(
+        window,
+        if pinned { HWND_TOPMOST } else { HWND_NOTOPMOST },
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE,
+      );
+    }
 
 
     let accel = ACCEL { fVirt: FCONTROL | FVIRTKEY, key: VK_RETURN.0 as u16, cmd: ID_BTN_SEND as u16 };
@@ -336,7 +351,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 
       let countdown_text = format!("剩余时间 {}", format_remaining(params.timeout_ms));
 
-      let countdown_label = create_label(hwnd, &countdown_text, 20, 24, 200, 24);
+      let countdown_label = create_label(hwnd, &countdown_text, 20, 24, 160, 24);
+      let loading_icon = create_label(hwnd, "⏳", 190, 24, 20, 24);
+      let loading_text = create_label(hwnd, "等待增强", 214, 24, 240, 24);
 
 
 
@@ -443,6 +460,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
       set_control_font(pin_button, font);
 
       set_control_font(countdown_label, font);
+      set_control_font(loading_icon, font);
+      set_control_font(loading_text, font);
 
       set_control_font(btn_end, font);
 
@@ -479,6 +498,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         pin_button,
 
         countdown_label,
+        loading_icon,
+        loading_text,
 
         pinned,
 
@@ -529,6 +550,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         if !auto_enhance {
 
 
+
+          set_loading(&*state_ptr, false);
 
           let _ = SetFocus(btn_send);
 
@@ -797,6 +820,24 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 
       LRESULT(0)
 
+    }
+    WM_SHOWWINDOW => {
+      let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState };
+      if !ptr.is_null() && wparam.0 != 0 {
+        let state = unsafe { &mut *ptr };
+        let _ = unsafe {
+          SetWindowPos(
+            hwnd,
+            if state.pinned { HWND_TOPMOST } else { HWND_NOTOPMOST },
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE,
+          )
+        };
+      }
+      LRESULT(0)
     }
 
     WM_TIMER => {
@@ -1244,11 +1285,19 @@ fn format_remaining(ms: u32) -> String {
 
 /// 切换加载态，避免重复点击。
 fn set_loading(state: &WindowState, loading: bool) {
-  let label = if loading { "增强中..." } else { "继续增强" };
+  let (icon, status, label) = if loading {
+    ("⏳", "正在增强...", "⏳ 增强中...")
+  } else {
+    ("⏳", "等待增强", "继续增强")
+  };
 
   unsafe {
 
     let _ = SetWindowTextW(state.btn_continue, PCWSTR(to_wstring(label).as_ptr()));
+    let _ = SetWindowTextW(state.loading_icon, PCWSTR(to_wstring(icon).as_ptr()));
+    let _ = SetWindowTextW(state.loading_text, PCWSTR(to_wstring(status).as_ptr()));
+    let _ = ShowWindow(state.loading_icon, if loading { SW_SHOW } else { SW_HIDE });
+    let _ = ShowWindow(state.loading_text, if loading { SW_SHOW } else { SW_HIDE });
 
     let enable = !loading;
 
@@ -1321,10 +1370,3 @@ fn save_pin_state(pinned: bool) {
   let _ = fs::write(path, content);
 
 }
-
-
-
-
-
-
-
