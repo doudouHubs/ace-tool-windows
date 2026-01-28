@@ -1,0 +1,6 @@
+
+> ace-tool-windows@0.2.2 release
+> cargo build --release
+
+   Compiling rust-win32 v0.1.0 (F:\GitlabProjects\ace-tool-windows)
+    Finished `release` profile [optimized] target(s) in 20.63s
