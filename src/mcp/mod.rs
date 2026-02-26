@@ -1,6 +1,7 @@
 ﻿use serde_json::{json, Value};
 use std::fs::OpenOptions;
 use std::io::{self, BufRead, Write};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -138,8 +139,9 @@ impl McpServer {
           return Some(error_response(id, -32602, "Missing tool name"));
         }
 
-        match (self.handler)(tool_name.as_str(), args) {
-          Ok(text) => Some(json!({
+        let tool_result = catch_unwind(AssertUnwindSafe(|| (self.handler)(tool_name.as_str(), args)));
+        match tool_result {
+          Ok(Ok(text)) => Some(json!({
             "jsonrpc": "2.0",
             "id": id,
             "result": {
@@ -151,7 +153,8 @@ impl McpServer {
               ]
             }
           })),
-          Err(err) => Some(error_response(id, -32000, &err)),
+          Ok(Err(err)) => Some(error_response(id, -32000, &err)),
+          Err(_) => Some(error_response(id, -32099, "Tool handler panicked")),
         }
       }
       MethodKind::Notification => None,

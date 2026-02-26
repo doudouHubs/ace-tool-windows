@@ -13,7 +13,7 @@ use logging::{init_mcp_logger, LogLevel};
 use mcp::{log_debug, schemas, McpLogger, McpServer, ToolHandler};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
 use tokio::time::timeout;
 use ui::session::{run_prompt_session, ContinueCallback, SessionAction, is_headless_mode};
@@ -67,7 +67,8 @@ fn handle_search_context(
   config: &Arc<Config>,
   runtime: &Arc<Runtime>,
 ) -> Result<String, String> {
-  let args = args.unwrap_or_else(|| serde_json::json!({}));
+  let started = Instant::now();
+  let args = args.unwrap_or_else(|| serde_json::json!({}));
   let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
   if query.is_empty() {
     return Ok("Error: query is required".to_string());
@@ -103,8 +104,40 @@ fn handle_search_context(
   )
   .map_err(|e| format!("Error: {e}"))?;
 
-  let result = runtime.block_on(manager.search_context(query));
-  Ok(result)
+  let timeout_sec = std::env::var("ACE_TOOL_SEARCH_TIMEOUT_SEC")
+    .ok()
+    .and_then(|v| v.trim().parse::<u64>().ok())
+    .filter(|v| *v >= 10 && *v <= 300)
+    .unwrap_or(50);
+  log_debug(format!(
+    "search_context: start root={} query_len={} timeout={}s",
+    project_root_path,
+    query.chars().count(),
+    timeout_sec
+  ));
+
+  let result = runtime.block_on(async {
+    timeout(Duration::from_secs(timeout_sec), manager.search_context(query)).await
+  });
+  match result {
+    Ok(text) => {
+      log_debug(format!(
+        "search_context: done elapsed={}ms",
+        started.elapsed().as_millis()
+      ));
+      Ok(text)
+    }
+    Err(_) => {
+      log_debug(format!(
+        "search_context: timeout elapsed={}ms",
+        started.elapsed().as_millis()
+      ));
+      Ok(format!(
+        "Error: search_context timed out after {} seconds. Narrow query or reduce project scope and retry.",
+        timeout_sec
+      ))
+    }
+  }
 }
 
 /// `enhance_prompt` 的处理入口。
