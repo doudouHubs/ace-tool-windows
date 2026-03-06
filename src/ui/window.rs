@@ -36,14 +36,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
   RegisterClassW, SetTimer, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
 
-  CW_USEDEFAULT, HMENU, MSG, WM_COMMAND, WM_CREATE, WM_CLOSE, WM_KEYDOWN, WM_DESTROY, WM_TIMER, WM_SHOWWINDOW, WNDCLASSW, WNDPROC,
+  CW_USEDEFAULT, HMENU, MSG, WM_COMMAND, WM_CREATE, WM_CLOSE, WM_KEYDOWN, WM_DESTROY, WM_TIMER, WM_SHOWWINDOW, WM_SIZE, WNDCLASSW, WNDPROC,
   WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL, WS_EX_CLIENTEDGE, BN_CLICKED,
 
   GetWindowLongPtrW, SetWindowLongPtrW, GWLP_USERDATA, GWLP_WNDPROC, GetWindowTextLengthW, GetWindowTextW,
 
   ES_AUTOVSCROLL, ES_MULTILINE, WINDOW_STYLE, SetWindowPos, SetWindowTextW, HWND_TOPMOST,
 
-  HWND_NOTOPMOST, SWP_NOMOVE, SWP_NOSIZE, SendMessageW, WM_SETFONT, WM_CTLCOLORDLG,
+  HWND_NOTOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, WM_SETFONT, WM_CTLCOLORDLG,
 
   WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_CTLCOLORBTN, BS_FLAT, WM_ERASEBKGND, GetClientRect, BM_CLICK,
 
@@ -538,6 +538,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         let _ = SetWindowLongPtrW(edit, GWLP_USERDATA, edit_proc);
         let _ = SetWindowLongPtrW(btn_send, GWLP_USERDATA, send_proc);
 
+        apply_responsive_layout(hwnd, &*state_ptr);
+
         SetTimer(hwnd, ID_TIMER_TIMEOUT, params.timeout_ms, None);
 
         SetTimer(hwnd, ID_TIMER_COUNTDOWN, 1000, None);
@@ -768,6 +770,7 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
       let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState };
       if !ptr.is_null() && wparam.0 != 0 {
         let state = unsafe { &mut *ptr };
+        apply_responsive_layout(hwnd, state);
         let _ = unsafe {
           SetWindowPos(
             hwnd,
@@ -779,6 +782,14 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             SWP_NOMOVE | SWP_NOSIZE,
           )
         };
+      }
+      LRESULT(0)
+    }
+    WM_SIZE => {
+      let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState };
+      if !ptr.is_null() {
+        let state = unsafe { &mut *ptr };
+        apply_responsive_layout(hwnd, state);
       }
       LRESULT(0)
     }
@@ -1165,6 +1176,86 @@ fn normalize_windows_newlines(input: &str) -> String {
     }
   }
   out
+}
+
+fn apply_responsive_layout(hwnd: HWND, state: &WindowState) {
+  unsafe {
+    let mut rect = RECT::default();
+    let _ = GetClientRect(hwnd, &mut rect);
+
+    let client_width = (rect.right - rect.left).max(360);
+    let client_height = (rect.bottom - rect.top).max(280);
+
+    let padding = 16;
+    let header_y = padding;
+    let pin_w = 44;
+    let pin_h = 32;
+    let pin_x = (client_width - padding - pin_w).max(padding);
+    set_control_bounds(state.pin_button, pin_x, header_y - 4, pin_w, pin_h);
+
+    let countdown_w = 160.min((client_width - padding * 2 - pin_w - 130).max(80));
+    set_control_bounds(state.countdown_label, padding, header_y, countdown_w, 24);
+
+    let loading_icon_x = padding + countdown_w + 10;
+    set_control_bounds(state.loading_icon, loading_icon_x, header_y, 20, 24);
+    let loading_text_w = (pin_x - loading_icon_x - 26).max(40);
+    set_control_bounds(state.loading_text, loading_icon_x + 24, header_y, loading_text_w, 24);
+
+    let button_h = 36;
+    let button_gap = if client_width >= 820 { 20 } else { 12 };
+    let buttons_row_w = (client_width - padding * 2).max(320);
+    let button_w = ((buttons_row_w - button_gap * 3) / 4).max(72);
+    let total_buttons_w = button_w * 4 + button_gap * 3;
+    let button_start_x = padding + ((buttons_row_w - total_buttons_w).max(0) / 2);
+    let buttons_y = (client_height - padding - button_h).max(120);
+
+    set_control_bounds(state.btn_end, button_start_x, buttons_y, button_w, button_h);
+    set_control_bounds(
+      state.btn_continue,
+      button_start_x + button_w + button_gap,
+      buttons_y,
+      button_w,
+      button_h,
+    );
+    set_control_bounds(
+      state.btn_original,
+      button_start_x + (button_w + button_gap) * 2,
+      buttons_y,
+      button_w,
+      button_h,
+    );
+    set_control_bounds(
+      state.btn_send,
+      button_start_x + (button_w + button_gap) * 3,
+      buttons_y,
+      button_w,
+      button_h,
+    );
+
+    let edit_x = padding;
+    let edit_y = header_y + 36;
+    let edit_w = (client_width - padding * 2).max(220);
+    let edit_h = (buttons_y - edit_y - 14).max(100);
+    set_control_bounds(state.edit, edit_x, edit_y, edit_w, edit_h);
+  }
+}
+
+fn set_control_bounds(control: HWND, x: i32, y: i32, width: i32, height: i32) {
+  if control.0.is_null() {
+    return;
+  }
+
+  unsafe {
+    let _ = SetWindowPos(
+      control,
+      HWND(null_mut()),
+      x.max(0),
+      y.max(0),
+      width.max(1),
+      height.max(1),
+      SWP_NOZORDER,
+    );
+  }
 }
 
 
