@@ -1,17 +1,19 @@
-﻿use crate::index::manager::IndexManager;
+﻿use crate::enhancer::provider::{EnhanceProvider, EnhanceProviderKind};
+use crate::index::manager::IndexManager;
+use futures::future::BoxFuture;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::Client;
 use serde_json::{json, Value};
 use std::time::Duration;
 
-/// 提示词增强器，封装与远端 `/prompt-enhancer` 的交互。
-pub struct PromptEnhancer {
+/// 远端增强提供方，封装与 `/prompt-enhancer` 的交互。
+pub struct RemoteProvider {
   base_url: String,
   client: Client,
   index_manager: IndexManager,
 }
 
-impl PromptEnhancer {
+impl RemoteProvider {
   /// 创建增强器并初始化 HTTP 客户端（含鉴权头）。
   pub fn new(index_manager: IndexManager, base_url: String, token: String) -> Result<Self, String> {
     let mut headers = HeaderMap::new();
@@ -36,7 +38,7 @@ impl PromptEnhancer {
   }
 
   /// 主入口：加载索引并调用增强 API。
-  pub async fn enhance(&self, original_prompt: &str, conversation_history: &str) -> Result<String, String> {
+  pub async fn enhance_prompt(&self, original_prompt: &str, conversation_history: &str) -> Result<String, String> {
     let blob_names = self.index_manager.load_index();
     self.call_prompt_enhancer_api(original_prompt, conversation_history, &blob_names)
       .await
@@ -53,9 +55,9 @@ impl PromptEnhancer {
     let chat_history = parse_chat_history(conversation_history);
     // 根据输入语言决定是否强制中文输出。
     let language_guideline = if should_use_chinese(original_prompt) {
-      "Please respond in Chinese (Simplified Chinese). 请务必使用中文回复。"
+      "Please respond in Chinese (Simplified Chinese). 请务必使用中文回复。增强结果必须比原文更具体、更细致，信息量不能减少。表达方式应自适应原始语义，不要套固定模板；可按需要使用分段、小标题或列表，但不强制。以便于浏览、逻辑清晰为目标。"
     } else {
-      ""
+      "Make the enhanced prompt more concrete and detailed than the original. Do not reduce information density. Adapt the format to the original intent instead of forcing a rigid template. Use paragraphs/headings/lists only when they improve readability."
     };
 
     let payload = json!({
@@ -119,6 +121,16 @@ impl PromptEnhancer {
         Err(format!("Prompt enhancer API 调用失败: {}", msg))
       }
     }
+  }
+}
+
+impl EnhanceProvider for RemoteProvider {
+  fn kind(&self) -> EnhanceProviderKind {
+    EnhanceProviderKind::Remote
+  }
+
+  fn enhance<'a>(&'a self, prompt: &'a str, conversation_history: &'a str) -> BoxFuture<'a, Result<String, String>> {
+    Box::pin(async move { self.enhance_prompt(prompt, conversation_history).await })
   }
 }
 
@@ -204,4 +216,22 @@ fn count_ascii_words(text: &str) -> usize {
     }
   }
   count
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{replace_tool_names, should_use_chinese};
+
+  #[test]
+  fn replace_tool_name_variants() {
+    let input = "use codebase-retrieval then codebase_retrieval";
+    let output = replace_tool_names(input);
+    assert_eq!(output, "use search_context then search_context");
+  }
+
+  #[test]
+  fn should_use_chinese_works_for_basic_cases() {
+    assert!(should_use_chinese("请帮我优化这个接口的返回结构"));
+    assert!(!should_use_chinese("Please optimize this API response shape."));
+  }
 }

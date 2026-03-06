@@ -46,6 +46,15 @@ fn enhance_prompt_tool() -> Value {
         "conversation_history": {
           "type": "string",
           "description": "Recent conversation history (5-10 turns) to provide context."
+        },
+        "provider": {
+          "type": "string",
+          "enum": ["remote", "codex"],
+          "description": "Optional enhancement provider override. Priority: args.provider > CLI/ENV config > default remote."
+        },
+        "codex_cmd": {
+          "type": "string",
+          "description": "Optional Codex command override. Useful on Windows when the MCP host cannot inherit the same PATH as your terminal. Priority: args.codex_cmd > CLI/ENV config > default codex."
         }
       },
       "required": ["prompt", "conversation_history"]

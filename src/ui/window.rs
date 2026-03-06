@@ -589,41 +589,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             let result = cb(current);
 
               match result {
-
-
-
-                Ok(text) => {
-
-
-
-                  let ptr = Box::into_raw(Box::new(text));
-
-
-
-                  let _ = PostMessageW(hwnd_copy, WM_APP_ENHANCE_SUCCESS, WPARAM(0), LPARAM(ptr as isize));
-
-
-
-                }
-
-
-
-                Err(err) => {
-
-
-
-                  let ptr = Box::into_raw(Box::new(err));
-
-
-
-                  let _ = PostMessageW(hwnd_copy, WM_APP_ENHANCE_ERROR, WPARAM(0), LPARAM(ptr as isize));
-
-
-
-                }
-
-
-
+                Ok(text) => post_enhance_message(hwnd_copy, WM_APP_ENHANCE_SUCCESS, text),
+                Err(err) => post_enhance_message(hwnd_copy, WM_APP_ENHANCE_ERROR, err),
               }
 
           });
@@ -740,28 +707,9 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
 
             let result = cb(current);
 
-            unsafe {
-
-              match result {
-
-                Ok(text) => {
-
-                  let ptr = Box::into_raw(Box::new(text));
-
-                  let _ = PostMessageW(hwnd_copy, WM_APP_ENHANCE_SUCCESS, WPARAM(0), LPARAM(ptr as isize));
-
-                }
-
-                Err(err) => {
-
-                  let ptr = Box::into_raw(Box::new(err));
-
-                  let _ = PostMessageW(hwnd_copy, WM_APP_ENHANCE_ERROR, WPARAM(0), LPARAM(ptr as isize));
-
-                }
-
-              }
-
+            match result {
+              Ok(text) => post_enhance_message(hwnd_copy, WM_APP_ENHANCE_SUCCESS, text),
+              Err(err) => post_enhance_message(hwnd_copy, WM_APP_ENHANCE_ERROR, err),
             }
 
           });
@@ -1268,6 +1216,17 @@ fn format_remaining(ms: u32) -> String {
 
 }
 
+/// 向窗口线程回投增强结果；如果投递失败，立即释放内存避免泄漏。
+fn post_enhance_message(hwnd: HWND, message: u32, payload: String) {
+  unsafe {
+    let ptr = Box::into_raw(Box::new(payload));
+    if PostMessageW(hwnd, message, WPARAM(0), LPARAM(ptr as isize)).is_err() {
+      log_debug(format!("ui: post message failed msg={}", message));
+      let _ = Box::from_raw(ptr);
+    }
+  }
+}
+
 
 
 /// 切换加载态，避免重复点击。
@@ -1279,6 +1238,7 @@ fn set_loading(state: &WindowState, loading: bool) {
   };
 
   unsafe {
+    log_debug(format!("ui: loading state changed loading={}", loading));
 
     let _ = SetWindowTextW(state.btn_continue, PCWSTR(to_wstring(label).as_ptr()));
     let _ = SetWindowTextW(state.loading_icon, PCWSTR(to_wstring(icon).as_ptr()));
@@ -1294,7 +1254,8 @@ fn set_loading(state: &WindowState, loading: bool) {
 
     let _ = EnableWindow(state.btn_original, enable);
 
-    let _ = EnableWindow(state.btn_end, enable);
+    // 允许用户在增强中主动结束会话，避免“卡住无法退出”的体感。
+    let _ = EnableWindow(state.btn_end, true);
 
     let _ = EnableWindow(state.pin_button, enable);
 
