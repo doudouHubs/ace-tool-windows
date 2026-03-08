@@ -2,7 +2,11 @@
 
 /// MCP 工具清单（用于 `tools/list`）。
 pub fn tool_list() -> Vec<Value> {
-  vec![search_context_tool(), enhance_prompt_tool()]
+  vec![
+    search_context_tool(),
+    enhance_prompt_tool("enhance_prompt"),
+    enhance_prompt_tool("enhancer"),
+  ]
 }
 
 /// `search_context` 工具的 schema 定义。
@@ -27,11 +31,11 @@ fn search_context_tool() -> Value {
   })
 }
 
-/// `enhance_prompt` 工具的 schema 定义。
-fn enhance_prompt_tool() -> Value {
+/// `enhance_prompt` / `enhancer` 工具的 schema 定义。
+fn enhance_prompt_tool(tool_name: &str) -> Value {
   json!({
-    "name": "enhance_prompt",
-    "description": "Enhances user requirements by combining codebase context and conversation history to generate clearer, more specific, and actionable prompts. IMPORTANT: Use this tool ONLY when: (1) User message contains explicit markers: -enhance, -enhancer, -Enhance, -Enhancer (case-insensitive, can appear anywhere in message). Examples: \"Add login feature -enhance\"; (2) User explicitly asks to \"enhance my prompt\" or \"use enhance_prompt tool\". DO NOT use for general optimization requests like \"optimize this code\" or \"improve this function\" - those are code optimization requests, not prompt enhancement. The tool opens a Web UI for user review and confirmation. Supports English and Chinese.",
+    "name": tool_name,
+    "description": "Enhances user requirements by combining codebase context and conversation history to generate clearer, more specific, and actionable prompts.\n\nTRIGGER RULE (MUST): if user message contains enhancement marker, call this tool before giving final answer.\nAccepted markers include: -enhance, -enhancer (case-insensitive), and common dash variants like –enhancer, —enhancer, －enhancer.\n\nAlso call this tool when user explicitly asks to enhance prompt (e.g. \"enhance my prompt\", \"use enhance_prompt\").\n\nDo NOT use this tool for normal code optimization requests (e.g. optimize function implementation). The tool opens a Win32 UI for confirmation.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -50,7 +54,7 @@ fn enhance_prompt_tool() -> Value {
         "provider": {
           "type": "string",
           "enum": ["remote", "codex"],
-          "description": "Optional enhancement provider override. Priority: args.provider > CLI/ENV config > default remote."
+          "description": "Optional provider consistency check. Must match startup provider; mismatched value is rejected. Startup provider priority: CLI/ENV config > default remote."
         },
         "codex_cmd": {
           "type": "string",

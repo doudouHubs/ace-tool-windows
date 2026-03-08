@@ -56,7 +56,7 @@ fn handle_tool_call(
 ) -> Result<String, String> {
   match name {
     "search_context" => handle_search_context(args, config, runtime),
-    "enhance_prompt" => handle_enhance_prompt(args, config, runtime),
+    "enhance_prompt" | "enhancer" => handle_enhance_prompt(args, config, runtime),
     _ => Err(format!("Unknown tool: {name}")),
   }
 }
@@ -171,7 +171,7 @@ fn handle_enhance_prompt(
     return Err("Missing required parameter: conversation_history".to_string());
   }
 
-  let provider_kind = resolve_provider_kind(&args, config);
+  let provider_kind = resolve_provider_kind(&args, config)?;
   let codex_cmd = resolve_codex_cmd(&args, config);
   let enhance_timeout_sec = resolve_enhance_timeout_sec(config, provider_kind);
   log_debug(format!(
@@ -309,6 +309,14 @@ fn handle_enhance_prompt(
     let provider = provider.clone();
     let history = history.clone();
     let provider_kind = continue_provider_kind;
+    let actual_kind = provider.kind();
+    if actual_kind != provider_kind {
+      return Err(format!(
+        "Provider lock violated: expected {}, got {}",
+        provider_kind.as_str(),
+        actual_kind.as_str()
+      ));
+    }
     let (continue_prompt, continue_history) = prepare_continue_inputs(provider_kind, &current, &history);
     log_debug(format!(
       "enhance_prompt: continue payload provider={} prompt_len={} history_len={}",
@@ -449,7 +457,27 @@ fn strip_enhance_markers(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-  use super::{prepare_continue_inputs, strip_enhance_markers, EnhanceProviderKind};
+  use super::{prepare_continue_inputs, resolve_provider_kind, strip_enhance_markers, Config, EnhanceProviderKind};
+  use serde_json::json;
+  use std::collections::HashSet;
+
+  fn test_config(provider: &str) -> Config {
+    Config {
+      base_url: "https://example.com".to_string(),
+      token: "token".to_string(),
+      batch_size: 10,
+      max_lines_per_blob: 800,
+      text_extensions: HashSet::new(),
+      exclude_patterns: Vec::new(),
+      enable_log: false,
+      enhance_provider: provider.to_string(),
+      codex_cmd: "codex".to_string(),
+      codex_reasoning_effort: "low".to_string(),
+      enhance_timeout_sec: 90,
+      enhance_timeout_explicit: false,
+      ui_timeout_sec: 480,
+    }
+  }
 
   #[test]
   fn strip_markers_basic() {
@@ -510,17 +538,62 @@ mod tests {
     assert_eq!(prompt, "current prompt");
     assert_eq!(history, "conversation history");
   }
+
+  #[test]
+  fn resolve_provider_kind_uses_explicit_codex_when_configured_codex() {
+    let args = json!({ "provider": "codex" });
+    let cfg = test_config("codex");
+    let kind = resolve_provider_kind(&args, &cfg).expect("provider should parse");
+    assert_eq!(kind, EnhanceProviderKind::Codex);
+  }
+
+  #[test]
+  fn resolve_provider_kind_rejects_invalid_override() {
+    let args = json!({ "provider": "codx" });
+    let cfg = test_config("remote");
+    let err = resolve_provider_kind(&args, &cfg).unwrap_err();
+    assert!(err.contains("Invalid provider override"));
+  }
+
+  #[test]
+  fn resolve_provider_kind_rejects_mismatched_override() {
+    let args = json!({ "provider": "remote" });
+    let cfg = test_config("codex");
+    let err = resolve_provider_kind(&args, &cfg).unwrap_err();
+    assert!(err.contains("Provider override denied"));
+  }
+
+  #[test]
+  fn resolve_provider_kind_allows_same_override() {
+    let args = json!({ "provider": "codex" });
+    let cfg = test_config("codex");
+    let kind = resolve_provider_kind(&args, &cfg).expect("provider should parse");
+    assert_eq!(kind, EnhanceProviderKind::Codex);
+  }
 }
 
-fn resolve_provider_kind(args: &serde_json::Value, config: &Config) -> EnhanceProviderKind {
-  let arg_provider = args
-    .get("provider")
-    .and_then(|v| v.as_str())
-    .and_then(EnhanceProviderKind::parse);
-  if let Some(kind) = arg_provider {
-    return kind;
+fn resolve_provider_kind(args: &serde_json::Value, config: &Config) -> Result<EnhanceProviderKind, String> {
+  let configured = EnhanceProviderKind::parse(&config.enhance_provider).ok_or_else(|| {
+    format!(
+      "Invalid configured provider: {} (expected remote|codex)",
+      config.enhance_provider
+    )
+  })?;
+
+  if let Some(raw) = args.get("provider").and_then(|v| v.as_str()) {
+    let override_kind = EnhanceProviderKind::parse(raw)
+      .ok_or_else(|| format!("Invalid provider override: {} (expected remote|codex)", raw))?;
+    if override_kind != configured {
+      return Err(format!(
+        "Provider override denied: configured={}, requested={}",
+        configured.as_str(),
+        override_kind.as_str()
+      ));
+    }
+    return Ok(override_kind);
   }
-  EnhanceProviderKind::parse(&config.enhance_provider).unwrap_or(EnhanceProviderKind::Remote)
+
+  Ok(configured)
 }
 
 fn resolve_codex_cmd(args: &serde_json::Value, config: &Config) -> String {

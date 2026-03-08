@@ -102,13 +102,14 @@ args = [
 ## 5. Provider 选择（remote / codex）
 
 优先级：
-1. `enhance_prompt` 调用参数 `provider`
-2. 启动参数 `--provider` / 环境变量
-3. 默认 `remote`
+1. 启动参数 `--provider` / 环境变量
+2. 默认 `remote`
+3. `enhance_prompt` 调用参数 `provider` 只做一致性校验，不用于切换
 
 注意：
-- 仅 `enhance_prompt` 可切换 provider，`search_context` 始终使用远端。
+- 仅 `enhance_prompt` 使用 provider 配置；`search_context` 始终使用远端。
 - `provider` 只允许 `remote` / `codex`，非法值会导致启动报错。
+- 请求级 `provider` 不允许与启动 provider 不一致；不一致会直接报错并拒绝执行（默认强约束，避免会话中途切到 remote）。
 - `codex` provider 需要本地 `codex` CLI 可执行（可用 `--codex-cmd` 指定路径）。
 - `codex_cmd` 不是固定绝对路径，默认会按当前机器环境自动解析；跨设备建议先用 `codex`，失败再改绝对路径。
 
@@ -140,6 +141,7 @@ args = [
 
 补充：
 - 增强文本默认遵循“语义自适应”的排版策略：优先保留原语义并细化细节；可用分段/小标题/列表提升可读性，但不强制固定模板。
+- 当前工具名同时支持 `enhance_prompt` 与 `enhancer`（别名），用于提高不同客户端的工具路由命中率。
 
 ## 7. 常用环境变量
 
