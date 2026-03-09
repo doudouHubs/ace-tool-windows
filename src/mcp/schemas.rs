@@ -4,8 +4,7 @@
 pub fn tool_list() -> Vec<Value> {
   vec![
     search_context_tool(),
-    enhance_prompt_tool("enhance_prompt"),
-    enhance_prompt_tool("enhancer"),
+    enhance_prompt_tool(),
   ]
 }
 
@@ -31,11 +30,11 @@ fn search_context_tool() -> Value {
   })
 }
 
-/// `enhance_prompt` / `enhancer` 工具的 schema 定义。
-fn enhance_prompt_tool(tool_name: &str) -> Value {
+/// `enhance_prompt` 工具的 schema 定义。
+fn enhance_prompt_tool() -> Value {
   json!({
-    "name": tool_name,
-    "description": "Enhances user requirements by combining codebase context and conversation history to generate clearer, more specific, and actionable prompts.\n\nTRIGGER RULE (MUST): if user message contains enhancement marker, call this tool before giving final answer.\nAccepted markers include: -enhance, -enhancer (case-insensitive), and common dash variants like –enhancer, —enhancer, －enhancer.\n\nAlso call this tool when user explicitly asks to enhance prompt (e.g. \"enhance my prompt\", \"use enhance_prompt\").\n\nDo NOT use this tool for normal code optimization requests (e.g. optimize function implementation). The tool opens a Win32 UI for confirmation.",
+    "name": "enhance_prompt",
+    "description": "Enhances user requirements by combining codebase context and conversation history to generate clearer, more specific, and actionable prompts.\n\nTRIGGER RULE: invoke only when the latest user message explicitly requests prompt enhancement or contains markers such as -enhance / -enhancer (case-insensitive; supports – — － variants).\n\nDo NOT trigger based only on historical messages, and do NOT call this tool again in the same turn after an enhancement result has already been returned.\n\nDo NOT use this tool for normal code optimization requests (e.g. optimize function implementation). The tool opens a Win32 UI for confirmation.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -54,7 +53,7 @@ fn enhance_prompt_tool(tool_name: &str) -> Value {
         "provider": {
           "type": "string",
           "enum": ["remote", "codex"],
-          "description": "Optional provider consistency check. Must match startup provider; mismatched value is rejected. Startup provider priority: CLI/ENV config > default remote."
+          "description": "Optional provider hint. Runtime always uses startup provider; mismatched value is ignored. Startup provider priority: CLI/ENV config > default remote."
         },
         "codex_cmd": {
           "type": "string",

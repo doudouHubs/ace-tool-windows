@@ -13,8 +13,11 @@ use enhancer::provider::{EnhanceProvider, EnhanceProviderKind};
 use index::manager::IndexManager;
 use logging::{init_mcp_logger, LogLevel};
 use mcp::{log_debug, schemas, McpLogger, McpServer, ToolHandler};
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
 use tokio::time::timeout;
@@ -56,7 +59,7 @@ fn handle_tool_call(
 ) -> Result<String, String> {
   match name {
     "search_context" => handle_search_context(args, config, runtime),
-    "enhance_prompt" | "enhancer" => handle_enhance_prompt(args, config, runtime),
+    "enhance_prompt" => handle_enhance_prompt(args, config, runtime),
     _ => Err(format!("Unknown tool: {name}")),
   }
 }
@@ -154,21 +157,20 @@ fn handle_enhance_prompt(
   log_debug("enhance_prompt: start".to_string());
   let args = args.unwrap_or_else(|| serde_json::json!({}));
   let raw_prompt = args.get("prompt").and_then(|v| v.as_str()).unwrap_or("");
-  let cleaned_prompt = strip_enhance_markers(raw_prompt);
-  let prompt = cleaned_prompt.trim();
   let history = args
     .get("conversation_history")
     .and_then(|v| v.as_str())
     .unwrap_or("");
 
-  if raw_prompt.trim().is_empty() {
-    return Err("Missing required parameter: prompt".to_string());
-  }
-  if prompt.is_empty() {
-    return Err("Prompt is empty after removing -enhance/-enhancer markers".to_string());
-  }
+  let prompt = match resolve_effective_prompt(raw_prompt, history) {
+    Some(value) => value,
+    None => {
+      log_debug("enhance_prompt: empty prompt after cleanup and history fallback; skip enhancement".to_string());
+      return Ok(raw_prompt.trim().to_string());
+    }
+  };
   if history.is_empty() {
-    return Err("Missing required parameter: conversation_history".to_string());
+    log_debug("enhance_prompt: conversation_history is empty, using prompt-only enhancement".to_string());
   }
 
   let provider_kind = resolve_provider_kind(&args, config)?;
@@ -187,6 +189,16 @@ fn handle_enhance_prompt(
     .and_then(|v| v.as_str())
     .map(PathBuf::from)
     .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+  let dedupe_ttl = Duration::from_secs(180);
+  let cache_key = build_enhance_cache_key(&project_root_path, provider_kind, &prompt, history);
+  if let Some(cached) = lookup_recent_enhance_result(cache_key, dedupe_ttl) {
+    log_debug(format!(
+      "enhance_prompt: duplicate call suppressed ttl={}s key={}",
+      dedupe_ttl.as_secs(),
+      cache_key
+    ));
+    return Ok(cached);
+  }
 
   let provider: Arc<dyn EnhanceProvider> = match provider_kind {
     EnhanceProviderKind::Remote => {
@@ -230,7 +242,7 @@ fn handle_enhance_prompt(
     log_debug("enhance_prompt: headless mode enabled".to_string());
     let enhance_started = Instant::now();
     let current_prompt = match runtime.block_on(async {
-      timeout(enhance_timeout, provider.enhance(prompt, history)).await
+      timeout(enhance_timeout, provider.enhance(&prompt, history)).await
     }) {
       Ok(Ok(text)) => {
         log_debug(format!(
@@ -268,36 +280,38 @@ fn handle_enhance_prompt(
 
     let continue_cb: ContinueCallback = Arc::new(|current: String| Ok(current));
     log_debug("enhance_prompt: opening ui".to_string());
-    return match run_prompt_session(&current_prompt, ui_timeout, continue_cb, false) {
+    let final_result = match run_prompt_session(&current_prompt, ui_timeout, continue_cb, false) {
       SessionAction::UseEnhanced(content) => {
         log_debug(format!(
           "enhance_prompt: ui action=use_enhanced elapsed={}ms",
           started.elapsed().as_millis()
         ));
-        Ok(content)
+        content
       }
       SessionAction::UseOriginal => {
         log_debug(format!(
           "enhance_prompt: ui action=use_original elapsed={}ms",
           started.elapsed().as_millis()
         ));
-        Ok(prompt.to_string())
+        prompt.clone()
       }
       SessionAction::EndConversation => {
         log_debug(format!(
           "enhance_prompt: ui action=end_conversation elapsed={}ms",
           started.elapsed().as_millis()
         ));
-        Ok("__END_CONVERSATION__".to_string())
+        "__END_CONVERSATION__".to_string()
       }
       SessionAction::Timeout => {
         log_debug(format!(
           "enhance_prompt: ui action=timeout fallback=enhanced elapsed={}ms",
           started.elapsed().as_millis()
         ));
-        Ok(current_prompt.clone())
+        current_prompt.clone()
       }
     };
+    store_recent_enhance_result(cache_key, &final_result);
+    return Ok(final_result);
   }
 
   let provider = provider.clone();
@@ -360,36 +374,38 @@ fn handle_enhance_prompt(
   });
 
   log_debug("enhance_prompt: opening ui".to_string());
-  match run_prompt_session(prompt, ui_timeout, continue_cb, true) {
+  let final_result = match run_prompt_session(&prompt, ui_timeout, continue_cb, true) {
     SessionAction::UseEnhanced(content) => {
       log_debug(format!(
         "enhance_prompt: ui action=use_enhanced elapsed={}ms",
         started.elapsed().as_millis()
       ));
-      Ok(content)
+      content
     }
     SessionAction::UseOriginal => {
       log_debug(format!(
         "enhance_prompt: ui action=use_original elapsed={}ms",
         started.elapsed().as_millis()
       ));
-      Ok(prompt.to_string())
+      prompt.clone()
     }
     SessionAction::EndConversation => {
       log_debug(format!(
         "enhance_prompt: ui action=end_conversation elapsed={}ms",
         started.elapsed().as_millis()
       ));
-      Ok("__END_CONVERSATION__".to_string())
+      "__END_CONVERSATION__".to_string()
     }
     SessionAction::Timeout => {
       log_debug(format!(
         "enhance_prompt: ui action=timeout fallback=original elapsed={}ms",
         started.elapsed().as_millis()
       ));
-      Ok(prompt.to_string())
+      prompt.clone()
     }
-  }
+  };
+  store_recent_enhance_result(cache_key, &final_result);
+  Ok(final_result)
 }
 
 fn prepare_continue_inputs(
@@ -455,9 +471,86 @@ fn strip_enhance_markers(input: &str) -> String {
   out
 }
 
+fn resolve_effective_prompt(raw_prompt: &str, history: &str) -> Option<String> {
+  let cleaned_prompt = strip_enhance_markers(raw_prompt);
+  let prompt = cleaned_prompt.trim();
+  if !prompt.is_empty() {
+    return Some(prompt.to_string());
+  }
+
+  derive_prompt_from_history(history)
+}
+
+fn derive_prompt_from_history(history: &str) -> Option<String> {
+  let cleaned = strip_enhance_markers(history);
+  for raw_line in cleaned.lines().rev() {
+    let mut line = raw_line.trim();
+    if line.is_empty() {
+      continue;
+    }
+    if line.eq_ignore_ascii_case("__END_CONVERSATION__") {
+      continue;
+    }
+
+    for prefix in ["User:", "用户:", "Human:", "Assistant:", "助手:", "AI:"] {
+      if let Some(rest) = line.strip_prefix(prefix) {
+        line = rest.trim();
+        break;
+      }
+    }
+    if line.is_empty() {
+      continue;
+    }
+    if !line.chars().any(is_prompt_char) {
+      continue;
+    }
+    return Some(line.to_string());
+  }
+  None
+}
+
+fn is_prompt_char(ch: char) -> bool {
+  ch.is_ascii_alphanumeric() || ('\u{4E00}'..='\u{9FFF}').contains(&ch)
+}
+
+fn build_enhance_cache_key(
+  project_root_path: &PathBuf,
+  provider_kind: EnhanceProviderKind,
+  prompt: &str,
+  history: &str,
+) -> u64 {
+  let mut hasher = DefaultHasher::new();
+  project_root_path.to_string_lossy().hash(&mut hasher);
+  provider_kind.as_str().hash(&mut hasher);
+  prompt.hash(&mut hasher);
+  history.hash(&mut hasher);
+  hasher.finish()
+}
+
+fn enhance_result_cache() -> &'static Mutex<HashMap<u64, (Instant, String)>> {
+  static CACHE: OnceLock<Mutex<HashMap<u64, (Instant, String)>>> = OnceLock::new();
+  CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn lookup_recent_enhance_result(cache_key: u64, ttl: Duration) -> Option<String> {
+  let mut guard = enhance_result_cache().lock().ok()?;
+  let now = Instant::now();
+  guard.retain(|_, (at, _)| now.duration_since(*at) <= ttl);
+  guard.get(&cache_key).map(|(_, result)| result.clone())
+}
+
+fn store_recent_enhance_result(cache_key: u64, result: &str) {
+  if let Ok(mut guard) = enhance_result_cache().lock() {
+    guard.insert(cache_key, (Instant::now(), result.to_string()));
+  }
+}
+
 #[cfg(test)]
 mod tests {
-  use super::{prepare_continue_inputs, resolve_provider_kind, strip_enhance_markers, Config, EnhanceProviderKind};
+  use super::{
+    derive_prompt_from_history, prepare_continue_inputs, resolve_effective_prompt, resolve_provider_kind,
+    strip_enhance_markers, Config, EnhanceProviderKind,
+  };
   use serde_json::json;
   use std::collections::HashSet;
 
@@ -510,6 +603,26 @@ mod tests {
   }
 
   #[test]
+  fn derive_prompt_from_history_prefers_latest_user_line() {
+    let history = "Assistant: 好的\nUser: 设计一个 Vue3 登录页 -enhancer";
+    let prompt = derive_prompt_from_history(history).expect("history should produce prompt");
+    assert_eq!(prompt, "设计一个 Vue3 登录页");
+  }
+
+  #[test]
+  fn resolve_effective_prompt_falls_back_to_history_when_prompt_only_marker() {
+    let prompt = resolve_effective_prompt("-enhancer", "用户: 用 Rust 写一个 CLI 工具 -enhancer")
+      .expect("fallback prompt");
+    assert_eq!(prompt, "用 Rust 写一个 CLI 工具");
+  }
+
+  #[test]
+  fn resolve_effective_prompt_returns_none_when_no_signal() {
+    let prompt = resolve_effective_prompt("-enhancer", "\n\n__END_CONVERSATION__\n");
+    assert!(prompt.is_none());
+  }
+
+  #[test]
   fn codex_continue_drops_history() {
     let (prompt, history) = prepare_continue_inputs(
       EnhanceProviderKind::Codex,
@@ -556,11 +669,11 @@ mod tests {
   }
 
   #[test]
-  fn resolve_provider_kind_rejects_mismatched_override() {
+  fn resolve_provider_kind_ignores_mismatched_override() {
     let args = json!({ "provider": "remote" });
     let cfg = test_config("codex");
-    let err = resolve_provider_kind(&args, &cfg).unwrap_err();
-    assert!(err.contains("Provider override denied"));
+    let kind = resolve_provider_kind(&args, &cfg).expect("provider should fallback to configured");
+    assert_eq!(kind, EnhanceProviderKind::Codex);
   }
 
   #[test]
@@ -584,13 +697,13 @@ fn resolve_provider_kind(args: &serde_json::Value, config: &Config) -> Result<En
     let override_kind = EnhanceProviderKind::parse(raw)
       .ok_or_else(|| format!("Invalid provider override: {} (expected remote|codex)", raw))?;
     if override_kind != configured {
-      return Err(format!(
-        "Provider override denied: configured={}, requested={}",
+      log_debug(format!(
+        "enhance_prompt: provider override ignored configured={} requested={}",
         configured.as_str(),
         override_kind.as_str()
       ));
     }
-    return Ok(override_kind);
+    return Ok(configured);
   }
 
   Ok(configured)

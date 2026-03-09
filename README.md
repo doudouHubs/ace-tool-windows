@@ -19,37 +19,36 @@ npm i -g ace-tool-windows
 - 优先通过环境变量或本地 MCP 配置注入。
 - 即便使用 `codex` provider，`search_context` 仍依赖远端服务，必须配置 token。
 
-## 3. 本地快速验证
+## 3. 模式速览（先选一个）
 
-远端增强（`remote`，默认）：
-
-```powershell
-ace-tool-win --base-url https://acemcp.heroman.wtf/relay/ --token <YOUR_TOKEN>
-```
-
-本地 Codex 增强（需要已安装可执行的 `codex` CLI）：
+### 3.1 `remote` 模式
+- 适合：不依赖本机 `codex` CLI，开箱可用。
+- 依赖：远端 token/credits。
+- 启动示例：
 
 ```powershell
-ace-tool-win --base-url https://acemcp.heroman.wtf/relay/ --token <YOUR_TOKEN> --provider codex --codex-cmd codex
+ace-tool-win --base-url https://acemcp.heroman.wtf/relay/ --token <YOUR_TOKEN> --provider remote
 ```
 
-可选参数：
-- `--enable-log`：写入项目 `.ace-tool/ace-tool.log`
-- `--provider remote|codex`：默认 `remote`
-- `--codex-cmd codex`：Codex 命令，支持绝对路径
-- `--codex-reasoning-effort <none|minimal|low|medium|high|xhigh>`：Codex 推理强度，默认 `low`
-- `--enhance-timeout-sec 90`：增强调用超时（10-600 秒）；未显式配置时 `remote` 默认 90 秒，`codex` 默认 180 秒
+### 3.2 `codex` 模式
+- 适合：希望本地走 Codex 增强，避免远端增强额度影响。
+- 依赖：本机可执行 `codex` CLI（`codex --version` 可用）。
+- 启动示例：
 
-Windows 说明：
-- 当前版本不会写死单一路径：`args.codex_cmd` > 启动参数/环境变量 > 默认 `codex`，再按“直接路径 -> PATH 查找 -> Windows 常见位置（Volta/npm）”解析可执行文件。
-- 调用 Codex 时默认附加 `-c "mcp_servers.mcp-router.enabled=false"`，避免 Codex 内部 `mcp-router` 启动抖动影响首轮增强。
-- Codex 超时时会自动降级重试一次 `reasoning_effort=none`（仅在首轮超时时触发）。
-- `--ui-timeout-sec 480`：UI 会话超时（30-3600 秒）
-- UI 窗口支持自适应布局（拖拽/缩放窗口时，编辑区与按钮区域会自动重排）。
+```powershell
+ace-tool-win --base-url https://acemcp.heroman.wtf/relay/ --token <YOUR_TOKEN> --provider codex --codex-cmd codex --codex-reasoning-effort low
+```
 
-## 4. 配置为 MCP Server
+关键说明：
+- `search_context` 始终走远端，所以即便是 `codex` 模式也必须有可用 token。
+- `codex_cmd` 推荐先用 `codex`（PATH 方案，跨设备更稳），确实找不到再写绝对路径。
+- 交互窗口支持自适应布局；Codex 首轮超时会自动重试一次 `reasoning_effort=none`。
 
-### 通用 JSON（mcpServers）
+## 4. MCP 配置模板（按模式复制）
+
+### 4.1 `remote` 模式模板
+
+JSON（适用于支持 `mcpServers` 的客户端）：
 
 ```json
 {
@@ -66,24 +65,7 @@ Windows 说明：
 }
 ```
 
-### Claude Code（JSON）
-
-```json
-{
-  "mcpServers": {
-    "ace-tool-windows": {
-      "command": "ace-tool-win",
-      "args": [
-        "--base-url", "https://acemcp.heroman.wtf/relay/",
-        "--token", "<YOUR_TOKEN>",
-        "--provider", "remote"
-      ]
-    }
-  }
-}
-```
-
-### Codex CLI（TOML）
+TOML（Codex CLI）：
 
 ```toml
 [mcpServers."ace-tool-windows"]
@@ -95,39 +77,47 @@ args = [
 ]
 ```
 
-如果使用 `codex` provider，请在 `args` 中追加：
-- `--provider`, `codex`
-- `--codex-cmd`, `<codex 可执行路径或命令>`
+### 4.2 `codex` 模式模板
 
-## 5. Provider 选择（remote / codex）
-
-优先级：
-1. 启动参数 `--provider` / 环境变量
-2. 默认 `remote`
-3. `enhance_prompt` 调用参数 `provider` 只做一致性校验，不用于切换
-
-注意：
-- 仅 `enhance_prompt` 使用 provider 配置；`search_context` 始终使用远端。
-- `provider` 只允许 `remote` / `codex`，非法值会导致启动报错。
-- 请求级 `provider` 不允许与启动 provider 不一致；不一致会直接报错并拒绝执行（默认强约束，避免会话中途切到 remote）。
-- `codex` provider 需要本地 `codex` CLI 可执行（可用 `--codex-cmd` 指定路径）。
-- `codex_cmd` 不是固定绝对路径，默认会按当前机器环境自动解析；跨设备建议先用 `codex`，失败再改绝对路径。
-
-`enhance_prompt` 示例（可选 `provider`）：
+JSON（适用于支持 `mcpServers` 的客户端）：
 
 ```json
 {
-  "prompt": "为当前项目添加登录功能 -enhance",
-  "conversation_history": "User: ...\nAssistant: ...",
-  "project_root_path": "F:/GitlabProjects/ace-tool-windows",
-  "provider": "codex",
-  "codex_cmd": "C:/Users/X1/AppData/Local/Volta/bin/codex"
+  "mcpServers": {
+    "ace-tool-windows": {
+      "command": "ace-tool-win",
+      "args": [
+        "--base-url", "https://acemcp.heroman.wtf/relay/",
+        "--token", "<YOUR_TOKEN>",
+        "--provider", "codex",
+        "--codex-cmd", "codex",
+        "--codex-reasoning-effort", "low"
+      ]
+    }
+  }
 }
 ```
 
-说明：
-- `codex_cmd` 是 `enhance_prompt` 的可选外部覆盖参数，优先级高于启动参数和环境变量。
-- 用户输入里的触发后缀（`-enhance` / `-enhancer`）会在增强前自动剥离，不会进入最终增强文本。
+TOML（Codex CLI）：
+
+```toml
+[mcpServers."ace-tool-windows"]
+command = "ace-tool-win"
+args = [
+  "--base-url", "https://acemcp.heroman.wtf/relay/",
+  "--token", "<YOUR_TOKEN>",
+  "--provider", "codex",
+  "--codex-cmd", "codex",
+  "--codex-reasoning-effort", "low"
+]
+```
+
+## 5. Provider 行为（当前版本）
+
+- 启动时确定 provider：`--provider` / `ACE_TOOL_ENHANCE_PROVIDER`，默认 `remote`。
+- 请求参数里的 `provider` 仅作为提示，不用于切换模式。
+- 如果请求里的 `provider` 与启动 provider 不一致，会自动忽略，仍以启动 provider 为准。
+- 不会再自动从 `codex` 降级到 `remote`。
 
 ## 6. 在 AI CLI 中触发增强
 
@@ -140,16 +130,32 @@ args = [
 ```
 
 补充：
-- 增强文本默认遵循“语义自适应”的排版策略：优先保留原语义并细化细节；可用分段/小标题/列表提升可读性，但不强制固定模板。
-- 当前工具名同时支持 `enhance_prompt` 与 `enhancer`（别名），用于提高不同客户端的工具路由命中率。
+- 用户输入里的触发后缀（`-enhance` / `-enhancer`）会在增强前自动剥离，不会进入最终增强文本。
+- 若本次调用的 `prompt` 仅包含触发后缀，服务端会自动回退到 `conversation_history` 提取可用提示，不再直接报错中断。
+- 工具入口统一为 `enhance_prompt`，避免同义工具名导致重复触发。
+- 服务端会对短时间内完全相同的增强请求做去重（约 180 秒），避免“窗口刚关又被同参再次拉起”。
+- 增强文本采用“语义自适应”排版：在不改变语义前提下提升细节和可读性，不强制固定模板。
 
-## 7. 常用环境变量
+## 7. 环境变量（按模式）
 
-- `ACE_TOOL_ENHANCE_PROVIDER=remote|codex`
-- `ACE_TOOL_CODEX_CMD=codex`
-- `ACE_TOOL_CODEX_REASONING_EFFORT=low`
-- `ACE_TOOL_ENHANCE_TIMEOUT_SEC=90`（未设置时 `remote` 默认 90 秒，`codex` 默认 180 秒）
-- `ACE_TOOL_UI_TIMEOUT_SEC=480`
+### 7.1 `remote` 模式
+
+```powershell
+$env:ACE_TOOL_ENHANCE_PROVIDER = "remote"
+```
+
+### 7.2 `codex` 模式
+
+```powershell
+$env:ACE_TOOL_ENHANCE_PROVIDER = "codex"
+$env:ACE_TOOL_CODEX_CMD = "codex"
+$env:ACE_TOOL_CODEX_REASONING_EFFORT = "low"
+```
+
+### 7.3 通用变量
+
+- `ACE_TOOL_ENHANCE_TIMEOUT_SEC=90`（范围 10-600；未显式配置时 `remote` 默认 90 秒，`codex` 默认 180 秒）
+- `ACE_TOOL_UI_TIMEOUT_SEC=480`（范围 30-3600）
 - `ACE_TOOL_HEADLESS=1`
 - `ACE_TOOL_HEADLESS_ACTION=enhanced|end|timeout`
 - `ACE_TOOL_DEBUG=1`

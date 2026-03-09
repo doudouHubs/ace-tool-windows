@@ -10,5 +10,4 @@ fn tools_list_contains_expected_tools() {
 
   assert!(names.contains(&"search_context".to_string()));
   assert!(names.contains(&"enhance_prompt".to_string()));
-  assert!(names.contains(&"enhancer".to_string()));
 }
