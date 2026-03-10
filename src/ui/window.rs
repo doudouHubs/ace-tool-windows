@@ -1,4 +1,4 @@
-﻿use crate::mcp::log_debug;
+use crate::mcp::log_debug;
 
 use crate::ui::session::{ContinueCallback, SessionAction};
 
@@ -14,7 +14,7 @@ use std::os::windows::ffi::OsStrExt;
 
 use std::ptr::null_mut;
 
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{Sender, channel};
 
 use std::thread;
 
@@ -22,42 +22,35 @@ use std::time::{Duration, Instant};
 
 use windows::core::PCWSTR;
 
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM, RECT, COLORREF, GetLastError};
+use windows::Win32::Foundation::{COLORREF, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM};
 
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 
-use windows::Win32::UI::Controls::{WC_EDITW, EM_SETSEL};
+use windows::Win32::UI::Controls::{EM_SETSEL, WC_EDITW};
 
-use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetKeyState, SetFocus, VK_CONTROL, VK_RETURN};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    EnableWindow, GetKeyState, SetFocus, VK_CONTROL, VK_RETURN,
+};
 
 use windows::Win32::UI::WindowsAndMessaging::{
-
-  CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, LoadCursorW, PostQuitMessage, CreateAcceleratorTableW, DestroyAcceleratorTable, TranslateAcceleratorW, CallWindowProcW,
-
-  RegisterClassW, SetTimer, TranslateMessage, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW,
-
-  CW_USEDEFAULT, HMENU, MSG, WM_COMMAND, WM_CREATE, WM_CLOSE, WM_KEYDOWN, WM_DESTROY, WM_TIMER, WM_SHOWWINDOW, WM_SIZE, WNDCLASSW, WNDPROC,
-  WS_CHILD, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL, WS_EX_CLIENTEDGE, BN_CLICKED,
-
-  GetWindowLongPtrW, SetWindowLongPtrW, GWLP_USERDATA, GWLP_WNDPROC, GetWindowTextLengthW, GetWindowTextW,
-
-  ES_AUTOVSCROLL, ES_MULTILINE, WINDOW_STYLE, SetWindowPos, SetWindowTextW, HWND_TOPMOST,
-
-  HWND_NOTOPMOST, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, WM_SETFONT, WM_CTLCOLORDLG,
-
-  WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_CTLCOLORBTN, BS_FLAT, WM_ERASEBKGND, GetClientRect, BM_CLICK,
-
-  PostMessageW, WM_APP, ShowWindow, SetForegroundWindow, MessageBoxW, MB_OK, SW_HIDE, SW_RESTORE, SW_SHOW, ACCEL, FCONTROL, FVIRTKEY,
-
+    ACCEL, BM_CLICK, BN_CLICKED, BS_FLAT, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT,
+    CallWindowProcW, CreateAcceleratorTableW, CreateWindowExW, DefWindowProcW,
+    DestroyAcceleratorTable, DestroyWindow, DispatchMessageW, ES_AUTOVSCROLL, ES_MULTILINE,
+    FCONTROL, FVIRTKEY, GWLP_USERDATA, GWLP_WNDPROC, GetClientRect, GetMessageW, GetWindowLongPtrW,
+    GetWindowTextLengthW, GetWindowTextW, HMENU, HWND_NOTOPMOST, HWND_TOPMOST, LoadCursorW, MB_OK,
+    MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW, SW_HIDE, SW_RESTORE, SW_SHOW,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SendMessageW, SetForegroundWindow, SetTimer,
+    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, TranslateAcceleratorW,
+    TranslateMessage, WINDOW_STYLE, WM_APP, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORBTN,
+    WM_CTLCOLORDLG, WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC, WM_DESTROY, WM_ERASEBKGND, WM_KEYDOWN,
+    WM_SETFONT, WM_SHOWWINDOW, WM_SIZE, WM_TIMER, WNDCLASSW, WNDPROC, WS_CHILD, WS_EX_CLIENTEDGE,
+    WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
 };
 
 use windows::Win32::Graphics::Gdi::{
-
-  CreateFontW, CreateSolidBrush, DeleteObject, FillRect, SetBkColor, SetBkMode, SetTextColor,
-
-  HBRUSH, HDC, HFONT, OPAQUE, TRANSPARENT, CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_QUALITY,
-  FF_DONTCARE, FW_NORMAL, OUT_DEFAULT_PRECIS,
-
+    CLIP_DEFAULT_PRECIS, CreateFontW, CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_QUALITY,
+    DeleteObject, FF_DONTCARE, FW_NORMAL, FillRect, HBRUSH, HDC, HFONT, OPAQUE, OUT_DEFAULT_PRECIS,
+    SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
 };
 
 const ID_BTN_SEND: usize = 1001;
@@ -80,1332 +73,1037 @@ const WM_APP_ENHANCE_SUCCESS: u32 = WM_APP + 1;
 
 const WM_APP_ENHANCE_ERROR: u32 = WM_APP + 2;
 
-
-
 struct CreateParams {
+    sender: Sender<SessionAction>,
 
-  sender: Sender<SessionAction>,
+    prompt: String,
 
-  prompt: String,
+    timeout_ms: u32,
 
-  timeout_ms: u32,
+    continue_cb: ContinueCallback,
 
-  continue_cb: ContinueCallback,
-
-  auto_enhance: bool,
-
+    auto_enhance: bool,
 }
-
-
 
 struct WindowState {
+    sender: Sender<SessionAction>,
 
-  sender: Sender<SessionAction>,
+    edit: HWND,
 
-  edit: HWND,
+    pin_button: HWND,
 
+    countdown_label: HWND,
+    loading_icon: HWND,
+    loading_text: HWND,
 
+    pinned: bool,
 
-  pin_button: HWND,
+    continue_cb: ContinueCallback,
 
-  countdown_label: HWND,
-  loading_icon: HWND,
-  loading_text: HWND,
+    btn_end: HWND,
 
-  pinned: bool,
+    btn_continue: HWND,
 
-  continue_cb: ContinueCallback,
+    btn_original: HWND,
 
-  btn_end: HWND,
+    btn_send: HWND,
 
-  btn_continue: HWND,
+    is_enhancing: bool,
 
-  btn_original: HWND,
+    action_sent: bool,
 
-  btn_send: HWND,
+    start_at: Instant,
 
-  is_enhancing: bool,
+    timeout_ms: u32,
 
-  action_sent: bool,
+    bg_brush: HBRUSH,
 
-  start_at: Instant,
+    edit_brush: HBRUSH,
 
-  timeout_ms: u32,
-
-  bg_brush: HBRUSH,
-
-  edit_brush: HBRUSH,
-
-  font: HFONT,
-
+    font: HFONT,
 }
-
-
 
 #[derive(Serialize, Deserialize)]
 
 struct PinState {
-
-  pinned: bool,
-
+    pinned: bool,
 }
-
-
 
 /// 启动 Win32 提示词确认窗口，阻塞直到用户选择或超时。
 pub fn run_prompt_window(
-  prompt: &str,
+    prompt: &str,
 
-  timeout: Duration,
+    timeout: Duration,
 
-  continue_cb: ContinueCallback,
+    continue_cb: ContinueCallback,
 
-  auto_enhance: bool,
-
+    auto_enhance: bool,
 ) -> SessionAction {
+    let (sender, receiver) = channel();
 
-  let (sender, receiver) = channel();
+    let timeout_ms = timeout.as_millis().min(u32::MAX as u128) as u32;
 
-  let timeout_ms = timeout.as_millis().min(u32::MAX as u128) as u32;
+    unsafe {
+        let hinstance = GetModuleHandleW(None).unwrap();
 
+        let class_name = to_wstring("AceToolPromptWindow");
 
+        let wnd_class = WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
 
-  unsafe {
+            lpfnWndProc: Some(wnd_proc),
 
-    let hinstance = GetModuleHandleW(None).unwrap();
+            hInstance: hinstance.into(),
 
-    let class_name = to_wstring("AceToolPromptWindow");
+            lpszClassName: PCWSTR(class_name.as_ptr()),
 
-    let wnd_class = WNDCLASSW {
+            hCursor: LoadCursorW(None, windows::Win32::UI::WindowsAndMessaging::IDC_ARROW).unwrap(),
 
-      style: CS_HREDRAW | CS_VREDRAW,
+            ..Default::default()
+        };
 
-      lpfnWndProc: Some(wnd_proc),
+        let atom = RegisterClassW(&wnd_class);
+        if atom == 0 {
+            log_debug(format!(
+                "ui: register class failed err={} ",
+                GetLastError().0
+            ));
+        } else {
+            log_debug("ui: register class ok".to_string());
+        }
 
-      hInstance: hinstance.into(),
+        let params = Box::new(CreateParams {
+            sender: sender.clone(),
 
-      lpszClassName: PCWSTR(class_name.as_ptr()),
+            prompt: prompt.to_string(),
 
-      hCursor: LoadCursorW(None, windows::Win32::UI::WindowsAndMessaging::IDC_ARROW).unwrap(),
+            timeout_ms,
 
-      ..Default::default()
+            continue_cb,
 
-    };
+            auto_enhance,
+        });
 
-
-
-    let atom = RegisterClassW(&wnd_class);
-    if atom == 0 {
-      log_debug(format!("ui: register class failed err={} ", GetLastError().0));
-    } else {
-      log_debug("ui: register class ok".to_string());
-    }
-
-
-
-    let params = Box::new(CreateParams {
-
-      sender: sender.clone(),
-
-      prompt: prompt.to_string(),
-
-      timeout_ms,
-
-      continue_cb,
-
-      auto_enhance,
-
-    });
-
-
-
-    let window = windows::Win32::UI::WindowsAndMessaging::CreateWindowExW(
-
-      Default::default(),
-
-      PCWSTR(class_name.as_ptr()),
-
-      PCWSTR(to_wstring("ace-tool 提示词增强").as_ptr()),
-
-      WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-
-      CW_USEDEFAULT,
-
-      CW_USEDEFAULT,
-
-      900,
-
-      600,
-
-      None,
-
-      None,
-
-      hinstance,
-
-      Some(Box::into_raw(params) as *const _),
-
-    )
-
-    .unwrap_or(HWND(null_mut()));
-
-
-
-    if window.0.is_null() {
-      log_debug(format!("ui: create window failed err={}", GetLastError().0));
-      return SessionAction::Timeout;
-    }
-
-    log_debug(format!("ui: window created hwnd={:?}", window));
-    let _ = ShowWindow(window, SW_RESTORE);
-    let _ = SetForegroundWindow(window);
-    let state_ptr = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut WindowState;
-    if !state_ptr.is_null() {
-      let pinned = (*state_ptr).pinned;
-      let _ = SetWindowPos(
-        window,
-        if pinned { HWND_TOPMOST } else { HWND_NOTOPMOST },
-        0,
-        0,
-        0,
-        0,
-        SWP_NOMOVE | SWP_NOSIZE,
-      );
-    }
-
-
-    let accel = ACCEL { fVirt: FCONTROL | FVIRTKEY, key: VK_RETURN.0 as u16, cmd: ID_BTN_SEND as u16 };
-
-
-
-
-    let accel_table = CreateAcceleratorTableW(&[accel]).unwrap_or_default();
-
-
-
-
-    let mut msg = MSG::default();
-
-
-
-    while GetMessageW(&mut msg, HWND(null_mut()), 0, 0).into() {
-
-
-
-      if TranslateAcceleratorW(window, accel_table, &msg) != 0 {
-
-
-
-        continue;
-
-
-
-      }
-
-
-
-      let _ = TranslateMessage(&msg);
-
-
-
-      DispatchMessageW(&msg);
-
-
-
-    }
-
-
-
-
-    let _ = DestroyAcceleratorTable(accel_table);
-
-  }
-
-
-
-  receiver.recv().unwrap_or(SessionAction::Timeout)
-
-}
-
-
-
-/// 窗口过程：处理创建、按钮点击、定时器与绘制等消息。
-unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-  match msg {
-
-    WM_CREATE => {
-
-      let createstruct = unsafe { &*(lparam.0 as *const CREATESTRUCTW) };
-
-      let params = unsafe { Box::from_raw(createstruct.lpCreateParams as *mut CreateParams) };
-
-
-
-      let pinned = if pin_state_path().exists() { load_pin_state() } else { true };
-
-      let pin_label = if pinned { "📌" } else { "📍" };
-
-      let pin_button = create_button(hwnd, pin_label, 820, 16, 44, 32, ID_BTN_PIN, true);
-
-      let countdown_text = format!("剩余时间 {}", format_remaining(params.timeout_ms));
-
-      let countdown_label = create_label(hwnd, &countdown_text, 20, 24, 160, 24);
-      let loading_icon = create_label(hwnd, "⏳", 190, 24, 20, 24);
-      let loading_text = create_label(hwnd, "等待增强", 214, 24, 240, 24);
-
-
-
-      let bg_brush = unsafe { CreateSolidBrush(rgb(245, 246, 248)) };
-
-      let edit_brush = unsafe { CreateSolidBrush(rgb(255, 255, 255)) };
-
-      let font = unsafe {
-
-        CreateFontW(
-
-          -16,
-
-          0,
-
-          0,
-
-          0,
-
-          FW_NORMAL.0 as i32,
-
-          0,
-
-          0,
-
-          0,
-
-          DEFAULT_CHARSET.0 as u32,
-
-          OUT_DEFAULT_PRECIS.0 as u32,
-
-          CLIP_DEFAULT_PRECIS.0 as u32,
-
-          DEFAULT_QUALITY.0 as u32,
-
-          FF_DONTCARE.0 as u32,
-
-          PCWSTR(to_wstring("Microsoft YaHei UI").as_ptr()),
-
+        let window = windows::Win32::UI::WindowsAndMessaging::CreateWindowExW(
+            Default::default(),
+            PCWSTR(class_name.as_ptr()),
+            PCWSTR(to_wstring("ace-tool 提示词增强").as_ptr()),
+            WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            900,
+            600,
+            None,
+            None,
+            hinstance,
+            Some(Box::into_raw(params) as *const _),
         )
-
-      };
-
-
-
-      let edit_style = WINDOW_STYLE(
-
-        WS_CHILD.0
-
-          | WS_VISIBLE.0
-
-          | WS_VSCROLL.0
-
-          | (ES_MULTILINE as u32)
-
-          | (ES_AUTOVSCROLL as u32),
-
-      );
-
-      let initial_text = normalize_windows_newlines(&params.prompt);
-      let edit = unsafe {
-        CreateWindowExW(
-          WS_EX_CLIENTEDGE,
-          WC_EDITW,
-          PCWSTR(to_wstring(&initial_text).as_ptr()),
-          edit_style,
-
-          20,
-
-          60,
-
-          840,
-
-          400,
-
-          hwnd,
-
-          HMENU(ID_EDIT_PROMPT as usize as *mut core::ffi::c_void),
-
-          None,
-
-          None,
-
-        )
-
-      }
-
-      .unwrap_or(HWND(null_mut()));
-
-
-
-      let btn_end = create_button(hwnd, "结束对话", 20, 480, 160, 32, ID_BTN_END, false);
-
-      let btn_continue = create_button(hwnd, "继续增强", 200, 480, 160, 32, ID_BTN_CONTINUE, false);
-
-      let btn_original = create_button(hwnd, "使用原始", 380, 480, 160, 32, ID_BTN_ORIGINAL, false);
-
-      let btn_send = create_button(hwnd, "发送增强", 600, 480, 160, 32, ID_BTN_SEND, false);
-
-
-
-      set_control_font(edit, font);
-
-      set_control_font(pin_button, font);
-
-      set_control_font(countdown_label, font);
-      set_control_font(loading_icon, font);
-      set_control_font(loading_text, font);
-
-      set_control_font(btn_end, font);
-
-      set_control_font(btn_continue, font);
-
-      set_control_font(btn_original, font);
-
-      set_control_font(btn_send, font);
-
-
-
-      let auto_enhance = params.auto_enhance;
-
-
-
-      let initial_prompt = params.prompt.clone();
-
-
-
-      let initial_cb = params.continue_cb.clone();
-
-
-
-      let state = Box::new(WindowState {
-
-        sender: params.sender,
-
-        edit,
-
-        pin_button,
-
-        countdown_label,
-        loading_icon,
-        loading_text,
-
-        pinned,
-
-        continue_cb: params.continue_cb,
-
-        btn_end,
-
-        btn_continue,
-
-        btn_original,
-
-        btn_send,
-
-        is_enhancing: false,
-
-        action_sent: false,
-
-        start_at: Instant::now(),
-
-        timeout_ms: params.timeout_ms,
-
-        bg_brush,
-
-        edit_brush,
-
-        font,
-
-      });
-
-
-
-      let state_ptr = Box::into_raw(state);
-
-
-
-      unsafe {
-
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
-
-        let edit_proc = SetWindowLongPtrW(edit, GWLP_WNDPROC, edit_wnd_proc as *const () as isize);
-        let send_proc = SetWindowLongPtrW(btn_send, GWLP_WNDPROC, send_wnd_proc as *const () as isize);
-        let _ = SetWindowLongPtrW(edit, GWLP_USERDATA, edit_proc);
-        let _ = SetWindowLongPtrW(btn_send, GWLP_USERDATA, send_proc);
-
-        apply_responsive_layout(hwnd, &*state_ptr);
-
-        SetTimer(hwnd, ID_TIMER_TIMEOUT, params.timeout_ms, None);
-
-        SetTimer(hwnd, ID_TIMER_COUNTDOWN, 1000, None);
-
-        if !auto_enhance {
-
-
-
-          set_loading(&*state_ptr, false);
-
-          let _ = SetFocus(btn_send);
-
-
-
+        .unwrap_or(HWND(null_mut()));
+
+        if window.0.is_null() {
+            log_debug(format!("ui: create window failed err={}", GetLastError().0));
+            return SessionAction::Timeout;
         }
 
-        if auto_enhance {
-
-
-
-          (*state_ptr).is_enhancing = true;
-
-
-
-          set_loading(&*state_ptr, true);
-
-
-
-          let cb = initial_cb.clone();
-
-
-
-          let hwnd_value = hwnd.0 as isize;
-
-
-
-          let current = initial_prompt.clone();
-
-
-
-          thread::spawn(move || {
-
-
-
-            let hwnd_copy = HWND(hwnd_value as *mut core::ffi::c_void);
-
-
-
-            let result = cb(current);
-
-              match result {
-                Ok(text) => post_enhance_message(hwnd_copy, WM_APP_ENHANCE_SUCCESS, text),
-                Err(err) => post_enhance_message(hwnd_copy, WM_APP_ENHANCE_ERROR, err),
-              }
-
-          });
-
-
-
+        log_debug(format!("ui: window created hwnd={:?}", window));
+        let _ = ShowWindow(window, SW_RESTORE);
+        let _ = SetForegroundWindow(window);
+        let state_ptr = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut WindowState;
+        if !state_ptr.is_null() {
+            let pinned = (*state_ptr).pinned;
+            let _ = SetWindowPos(
+                window,
+                if pinned { HWND_TOPMOST } else { HWND_NOTOPMOST },
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE,
+            );
         }
 
+        let accel = ACCEL {
+            fVirt: FCONTROL | FVIRTKEY,
+            key: VK_RETURN.0 as u16,
+            cmd: ID_BTN_SEND as u16,
+        };
 
+        let accel_table = CreateAcceleratorTableW(&[accel]).unwrap_or_default();
 
-        if pinned {
+        let mut msg = MSG::default();
 
-          let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-
-        }
-
-      }
-
-
-
-      LRESULT(0)
-
-    }
-
-    WM_COMMAND => {
-
-      if hiword(wparam.0 as u32) == (BN_CLICKED as u16) {
-
-        let id = loword(wparam.0 as u32) as usize;
-
-        let state = unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
-
-
-
-        if state.is_enhancing && id == ID_BTN_SEND {
-
-
-
-          return LRESULT(0);
-
-
-
-        }
-
-
-
-        
-
-        if id == ID_BTN_PIN {
-
-          state.pinned = !state.pinned;
-
-          save_pin_state(state.pinned);
-
-          let label = if state.pinned { "📌" } else { "📍" };
-
-          let _ = unsafe { SetWindowTextW(state.pin_button, PCWSTR(to_wstring(label).as_ptr())) };
-
-          let _ = unsafe {
-
-            SetWindowPos(
-
-              hwnd,
-
-              if state.pinned { HWND_TOPMOST } else { HWND_NOTOPMOST },
-
-              0,
-
-              0,
-
-              0,
-
-              0,
-
-              SWP_NOMOVE | SWP_NOSIZE,
-
-            )
-
-          };
-
-          return LRESULT(0);
-
-        }
-
-
-
-        if id == ID_BTN_CONTINUE {
-
-          log_debug("ui: click continue".to_string());
-
-          if state.is_enhancing {
-
-            return LRESULT(0);
-
-          }
-
-
-
-          state.is_enhancing = true;
-
-          set_loading(state, true);
-
-
-
-          let cb = state.continue_cb.clone();
-
-          let hwnd_value = hwnd.0 as isize;
-
-          let current = read_edit_text(state.edit);
-
-          thread::spawn(move || {
-
-            let hwnd_copy = HWND(hwnd_value as *mut core::ffi::c_void);
-
-            let result = cb(current);
-
-            match result {
-              Ok(text) => post_enhance_message(hwnd_copy, WM_APP_ENHANCE_SUCCESS, text),
-              Err(err) => post_enhance_message(hwnd_copy, WM_APP_ENHANCE_ERROR, err),
+        while GetMessageW(&mut msg, HWND(null_mut()), 0, 0).into() {
+            if TranslateAcceleratorW(window, accel_table, &msg) != 0 {
+                continue;
             }
 
-          });
+            let _ = TranslateMessage(&msg);
 
-          return LRESULT(0);
-
+            DispatchMessageW(&msg);
         }
 
+        let _ = DestroyAcceleratorTable(accel_table);
+    }
 
+    receiver.recv().unwrap_or(SessionAction::Timeout)
+}
 
-        let content = read_edit_text(state.edit);
+/// 窗口过程：处理创建、按钮点击、定时器与绘制等消息。
+unsafe extern "system" fn wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match msg {
+        WM_CREATE => {
+            let createstruct = unsafe { &*(lparam.0 as *const CREATESTRUCTW) };
 
-        let action = match id {
+            let params = unsafe { Box::from_raw(createstruct.lpCreateParams as *mut CreateParams) };
 
-          ID_BTN_SEND => {
+            let pinned = if pin_state_path().exists() {
+                load_pin_state()
+            } else {
+                true
+            };
 
-            log_debug("ui: click send enhanced".to_string());
+            let pin_label = if pinned { "📌" } else { "📍" };
 
-            SessionAction::UseEnhanced(content)
+            let pin_button = create_button(hwnd, pin_label, 820, 16, 44, 32, ID_BTN_PIN, true);
 
-          },
+            let countdown_text = format!("剩余时间 {}", format_remaining(params.timeout_ms));
 
-          ID_BTN_ORIGINAL => {
+            let countdown_label = create_label(hwnd, &countdown_text, 20, 24, 160, 24);
+            let loading_icon = create_label(hwnd, "⏳", 190, 24, 20, 24);
+            let loading_text = create_label(hwnd, "等待增强", 214, 24, 240, 24);
 
-            log_debug("ui: click use original".to_string());
+            let bg_brush = unsafe { CreateSolidBrush(rgb(245, 246, 248)) };
 
-            SessionAction::UseOriginal
+            let edit_brush = unsafe { CreateSolidBrush(rgb(255, 255, 255)) };
 
-          },
+            let font = unsafe {
+                CreateFontW(
+                    -16,
+                    0,
+                    0,
+                    0,
+                    FW_NORMAL.0 as i32,
+                    0,
+                    0,
+                    0,
+                    DEFAULT_CHARSET.0 as u32,
+                    OUT_DEFAULT_PRECIS.0 as u32,
+                    CLIP_DEFAULT_PRECIS.0 as u32,
+                    DEFAULT_QUALITY.0 as u32,
+                    FF_DONTCARE.0 as u32,
+                    PCWSTR(to_wstring("Microsoft YaHei UI").as_ptr()),
+                )
+            };
 
-          ID_BTN_END => {
+            let edit_style = WINDOW_STYLE(
+                WS_CHILD.0
+                    | WS_VISIBLE.0
+                    | WS_VSCROLL.0
+                    | (ES_MULTILINE as u32)
+                    | (ES_AUTOVSCROLL as u32),
+            );
 
-            log_debug("ui: click end conversation".to_string());
+            let initial_text = normalize_windows_newlines(&params.prompt);
+            let edit = unsafe {
+                CreateWindowExW(
+                    WS_EX_CLIENTEDGE,
+                    WC_EDITW,
+                    PCWSTR(to_wstring(&initial_text).as_ptr()),
+                    edit_style,
+                    20,
+                    60,
+                    840,
+                    400,
+                    hwnd,
+                    HMENU(ID_EDIT_PROMPT as usize as *mut core::ffi::c_void),
+                    None,
+                    None,
+                )
+            }
+            .unwrap_or(HWND(null_mut()));
 
-            SessionAction::EndConversation
+            let btn_end = create_button(hwnd, "结束对话", 20, 480, 160, 32, ID_BTN_END, false);
 
-          },
+            let btn_continue =
+                create_button(hwnd, "继续增强", 200, 480, 160, 32, ID_BTN_CONTINUE, false);
 
-          _ => SessionAction::Timeout,
+            let btn_original =
+                create_button(hwnd, "使用原始", 380, 480, 160, 32, ID_BTN_ORIGINAL, false);
 
-        };
+            let btn_send = create_button(hwnd, "发送增强", 600, 480, 160, 32, ID_BTN_SEND, false);
 
-        state.action_sent = true;
-        let _ = state.sender.send(action);
+            set_control_font(edit, font);
 
-        unsafe { let _ = DestroyWindow(hwnd); };
+            set_control_font(pin_button, font);
 
+            set_control_font(countdown_label, font);
+            set_control_font(loading_icon, font);
+            set_control_font(loading_text, font);
+
+            set_control_font(btn_end, font);
+
+            set_control_font(btn_continue, font);
+
+            set_control_font(btn_original, font);
+
+            set_control_font(btn_send, font);
+
+            let auto_enhance = params.auto_enhance;
+
+            let initial_prompt = params.prompt.clone();
+
+            let initial_cb = params.continue_cb.clone();
+
+            let state = Box::new(WindowState {
+                sender: params.sender,
+
+                edit,
+
+                pin_button,
+
+                countdown_label,
+                loading_icon,
+                loading_text,
+
+                pinned,
+
+                continue_cb: params.continue_cb,
+
+                btn_end,
+
+                btn_continue,
+
+                btn_original,
+
+                btn_send,
+
+                is_enhancing: false,
+
+                action_sent: false,
+
+                start_at: Instant::now(),
+
+                timeout_ms: params.timeout_ms,
+
+                bg_brush,
+
+                edit_brush,
+
+                font,
+            });
+
+            let state_ptr = Box::into_raw(state);
+
+            unsafe {
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
+
+                let edit_proc =
+                    SetWindowLongPtrW(edit, GWLP_WNDPROC, edit_wnd_proc as *const () as isize);
+                let send_proc =
+                    SetWindowLongPtrW(btn_send, GWLP_WNDPROC, send_wnd_proc as *const () as isize);
+                let _ = SetWindowLongPtrW(edit, GWLP_USERDATA, edit_proc);
+                let _ = SetWindowLongPtrW(btn_send, GWLP_USERDATA, send_proc);
+
+                apply_responsive_layout(hwnd, &*state_ptr);
+
+                SetTimer(hwnd, ID_TIMER_TIMEOUT, params.timeout_ms, None);
+
+                SetTimer(hwnd, ID_TIMER_COUNTDOWN, 1000, None);
+
+                if !auto_enhance {
+                    set_loading(&*state_ptr, false);
+
+                    let _ = SetFocus(btn_send);
+                }
+
+                if auto_enhance {
+                    (*state_ptr).is_enhancing = true;
+
+                    set_loading(&*state_ptr, true);
+
+                    let cb = initial_cb.clone();
+
+                    let hwnd_value = hwnd.0 as isize;
+
+                    let current = initial_prompt.clone();
+
+                    thread::spawn(move || {
+                        let hwnd_copy = HWND(hwnd_value as *mut core::ffi::c_void);
+
+                        let result = cb(current);
+
+                        match result {
+                            Ok(text) => {
+                                post_enhance_message(hwnd_copy, WM_APP_ENHANCE_SUCCESS, text)
+                            }
+                            Err(err) => post_enhance_message(hwnd_copy, WM_APP_ENHANCE_ERROR, err),
+                        }
+                    });
+                }
+
+                if pinned {
+                    let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+                }
+            }
+
+            LRESULT(0)
+        }
+
+        WM_COMMAND => {
+            if hiword(wparam.0 as u32) == (BN_CLICKED as u16) {
+                let id = loword(wparam.0 as u32) as usize;
+
+                let state =
+                    unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
+
+                if state.is_enhancing && id == ID_BTN_SEND {
+                    return LRESULT(0);
+                }
+
+                if id == ID_BTN_PIN {
+                    state.pinned = !state.pinned;
+
+                    save_pin_state(state.pinned);
+
+                    let label = if state.pinned { "📌" } else { "📍" };
+
+                    let _ = unsafe {
+                        SetWindowTextW(state.pin_button, PCWSTR(to_wstring(label).as_ptr()))
+                    };
+
+                    let _ = unsafe {
+                        SetWindowPos(
+                            hwnd,
+                            if state.pinned {
+                                HWND_TOPMOST
+                            } else {
+                                HWND_NOTOPMOST
+                            },
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOMOVE | SWP_NOSIZE,
+                        )
+                    };
+
+                    return LRESULT(0);
+                }
+
+                if id == ID_BTN_CONTINUE {
+                    log_debug("ui: click continue".to_string());
+
+                    if state.is_enhancing {
+                        return LRESULT(0);
+                    }
+
+                    state.is_enhancing = true;
+
+                    set_loading(state, true);
+
+                    let cb = state.continue_cb.clone();
+
+                    let hwnd_value = hwnd.0 as isize;
+
+                    let current = read_edit_text(state.edit);
+
+                    thread::spawn(move || {
+                        let hwnd_copy = HWND(hwnd_value as *mut core::ffi::c_void);
+
+                        let result = cb(current);
+
+                        match result {
+                            Ok(text) => {
+                                post_enhance_message(hwnd_copy, WM_APP_ENHANCE_SUCCESS, text)
+                            }
+                            Err(err) => post_enhance_message(hwnd_copy, WM_APP_ENHANCE_ERROR, err),
+                        }
+                    });
+
+                    return LRESULT(0);
+                }
+
+                let content = read_edit_text(state.edit);
+
+                let action = match id {
+                    ID_BTN_SEND => {
+                        log_debug("ui: click send enhanced".to_string());
+
+                        SessionAction::UseEnhanced(content)
+                    }
+
+                    ID_BTN_ORIGINAL => {
+                        log_debug("ui: click use original".to_string());
+
+                        SessionAction::UseOriginal
+                    }
+
+                    ID_BTN_END => {
+                        log_debug("ui: click end conversation".to_string());
+
+                        SessionAction::EndConversation
+                    }
+
+                    _ => SessionAction::Timeout,
+                };
+
+                state.action_sent = true;
+                let _ = state.sender.send(action);
+
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                };
+
+                return LRESULT(0);
+            }
+
+            LRESULT(0)
+        }
+        WM_SHOWWINDOW => {
+            let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState };
+            if !ptr.is_null() && wparam.0 != 0 {
+                let state = unsafe { &mut *ptr };
+                apply_responsive_layout(hwnd, state);
+                let _ = unsafe {
+                    SetWindowPos(
+                        hwnd,
+                        if state.pinned {
+                            HWND_TOPMOST
+                        } else {
+                            HWND_NOTOPMOST
+                        },
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE,
+                    )
+                };
+            }
+            LRESULT(0)
+        }
+        WM_SIZE => {
+            let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState };
+            if !ptr.is_null() {
+                let state = unsafe { &mut *ptr };
+                apply_responsive_layout(hwnd, state);
+            }
+            LRESULT(0)
+        }
+        WM_TIMER => {
+            let timer_id = wparam.0 as usize;
+
+            if timer_id == ID_TIMER_TIMEOUT {
+                let state =
+                    unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
+
+                state.action_sent = true;
+                let _ = state.sender.send(SessionAction::Timeout);
+
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                };
+            } else if timer_id == ID_TIMER_COUNTDOWN {
+                let state =
+                    unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
+
+                let elapsed = state.start_at.elapsed().as_millis() as u64;
+
+                let remaining = state.timeout_ms.saturating_sub(elapsed as u32);
+
+                let text = format!("剩余时间 {}", format_remaining(remaining));
+
+                let _ = unsafe {
+                    SetWindowTextW(state.countdown_label, PCWSTR(to_wstring(&text).as_ptr()))
+                };
+            }
+
+            LRESULT(0)
+        }
+
+        WM_CLOSE => {
+            let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState };
+
+            if !ptr.is_null() {
+                let state = unsafe { &mut *ptr };
+
+                if !state.action_sent {
+                    state.action_sent = true;
+
+                    let _ = state.sender.send(SessionAction::EndConversation);
+                }
+            }
+
+            unsafe {
+                let _ = DestroyWindow(hwnd);
+            };
+
+            LRESULT(0)
+        }
+        WM_APP_ENHANCE_SUCCESS => {
+            let state =
+                unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
+            let text = unsafe { Box::from_raw(lparam.0 as *mut String) };
+            let normalized = normalize_windows_newlines(&text);
+            let _ = unsafe { SetWindowTextW(state.edit, PCWSTR(to_wstring(&normalized).as_ptr())) };
+            state.is_enhancing = false;
+
+            set_loading(state, false);
+
+            let _ = unsafe { SetFocus(state.btn_send) };
+
+            LRESULT(0)
+        }
+
+        WM_APP_ENHANCE_ERROR => {
+            let state =
+                unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
+
+            let err = unsafe { Box::from_raw(lparam.0 as *mut String) };
+
+            state.is_enhancing = false;
+
+            set_loading(state, false);
+
+            let _ = unsafe { SetFocus(state.btn_send) };
+
+            let _ = unsafe {
+                MessageBoxW(
+                    hwnd,
+                    PCWSTR(to_wstring(&format!("增强失败，请重试：{}", err)).as_ptr()),
+                    PCWSTR(to_wstring("提示").as_ptr()),
+                    MB_OK,
+                )
+            };
+
+            LRESULT(0)
+        }
+
+        WM_ERASEBKGND => {
+            let state =
+                unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
+
+            let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
+
+            let mut rect = RECT::default();
+
+            let _ = unsafe { GetClientRect(hwnd, &mut rect) };
+
+            unsafe { FillRect(hdc, &rect, state.bg_brush) };
+
+            LRESULT(1)
+        }
+
+        WM_CTLCOLORDLG | WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
+            let state =
+                unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
+
+            let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
+
+            unsafe {
+                SetBkMode(hdc, TRANSPARENT);
+                SetTextColor(hdc, rgb(48, 48, 48));
+
+                SetBkColor(hdc, rgb(245, 246, 248));
+            }
+
+            LRESULT(state.bg_brush.0 as isize)
+        }
+
+        WM_CTLCOLOREDIT => {
+            let state =
+                unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
+
+            let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
+
+            unsafe {
+                SetBkMode(hdc, OPAQUE);
+                SetTextColor(hdc, rgb(32, 32, 32));
+
+                SetBkColor(hdc, rgb(255, 255, 255));
+            }
+
+            LRESULT(state.edit_brush.0 as isize)
+        }
+
+        WM_DESTROY => {
+            let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState };
+            let _ = unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
+
+            if !ptr.is_null() {
+                let state = unsafe { Box::from_raw(ptr) };
+
+                if !state.action_sent {
+                    let _ = state.sender.send(SessionAction::EndConversation);
+                }
+
+                unsafe {
+                    let _ = DeleteObject(state.bg_brush);
+
+                    let _ = DeleteObject(state.edit_brush);
+
+                    let _ = DeleteObject(state.font);
+                }
+            }
+
+            unsafe { PostQuitMessage(0) };
+
+            LRESULT(0)
+        }
+
+        _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+    }
+}
+
+unsafe extern "system" fn edit_wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if msg == WM_KEYDOWN {
+        let ctrl_down = unsafe { ((GetKeyState(VK_CONTROL.0 as i32) as u16) & 0x8000) != 0 };
+        if ctrl_down && (wparam.0 as u32) == 'A' as u32 {
+            let _ = unsafe { SendMessageW(hwnd, EM_SETSEL, WPARAM(0), LPARAM(-1)) };
+            return LRESULT(0);
+        }
+    }
+
+    let prev = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
+    if prev != 0 {
+        let proc: WNDPROC = unsafe { core::mem::transmute(prev) };
+        return unsafe { CallWindowProcW(proc, hwnd, msg, wparam, lparam) };
+    }
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+}
+
+unsafe extern "system" fn send_wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if msg == WM_KEYDOWN && (wparam.0 as u32) == VK_RETURN.0 as u32 {
+        let _ = unsafe { SendMessageW(hwnd, BM_CLICK, WPARAM(0), LPARAM(0)) };
         return LRESULT(0);
-
-      }
-
-      LRESULT(0)
-
-    }
-    WM_SHOWWINDOW => {
-      let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState };
-      if !ptr.is_null() && wparam.0 != 0 {
-        let state = unsafe { &mut *ptr };
-        apply_responsive_layout(hwnd, state);
-        let _ = unsafe {
-          SetWindowPos(
-            hwnd,
-            if state.pinned { HWND_TOPMOST } else { HWND_NOTOPMOST },
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE,
-          )
-        };
-      }
-      LRESULT(0)
-    }
-    WM_SIZE => {
-      let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState };
-      if !ptr.is_null() {
-        let state = unsafe { &mut *ptr };
-        apply_responsive_layout(hwnd, state);
-      }
-      LRESULT(0)
-    }
-    WM_TIMER => {
-
-      let timer_id = wparam.0 as usize;
-
-      if timer_id == ID_TIMER_TIMEOUT {
-
-        let state = unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
-
-
-
-        
-
-        state.action_sent = true;
-        let _ = state.sender.send(SessionAction::Timeout);
-
-        unsafe { let _ = DestroyWindow(hwnd); };
-
-      } else if timer_id == ID_TIMER_COUNTDOWN {
-
-        let state = unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
-
-
-
-        
-
-        let elapsed = state.start_at.elapsed().as_millis() as u64;
-
-        let remaining = state.timeout_ms.saturating_sub(elapsed as u32);
-
-        let text = format!("剩余时间 {}", format_remaining(remaining));
-
-        let _ = unsafe { SetWindowTextW(state.countdown_label, PCWSTR(to_wstring(&text).as_ptr())) };
-
-      }
-
-      LRESULT(0)
-
     }
 
-    WM_CLOSE => {
-
-      let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState };
-
-      if !ptr.is_null() {
-
-        let state = unsafe { &mut *ptr };
-
-        if !state.action_sent {
-
-          state.action_sent = true;
-
-          let _ = state.sender.send(SessionAction::EndConversation);
-
-        }
-
-      }
-
-      unsafe { let _ = DestroyWindow(hwnd); };
-
-      LRESULT(0)
-
-    }
-    WM_APP_ENHANCE_SUCCESS => {
-
-      let state = unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
-      let text = unsafe { Box::from_raw(lparam.0 as *mut String) };
-      let normalized = normalize_windows_newlines(&text);
-      let _ = unsafe { SetWindowTextW(state.edit, PCWSTR(to_wstring(&normalized).as_ptr())) };
-      state.is_enhancing = false;
-
-      set_loading(state, false);
-
-
-
-      let _ = unsafe { SetFocus(state.btn_send) };
-
-      LRESULT(0)
-
+    let prev = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
+    if prev != 0 {
+        let proc: WNDPROC = unsafe { core::mem::transmute(prev) };
+        return unsafe { CallWindowProcW(proc, hwnd, msg, wparam, lparam) };
     }
 
-    WM_APP_ENHANCE_ERROR => {
-
-      let state = unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
-
-      let err = unsafe { Box::from_raw(lparam.0 as *mut String) };
-
-      state.is_enhancing = false;
-
-      set_loading(state, false);
-
-
-
-      let _ = unsafe { SetFocus(state.btn_send) };
-
-      let _ = unsafe {
-
-        MessageBoxW(
-
-          hwnd,
-
-          PCWSTR(to_wstring(&format!("增强失败，请重试：{}", err)).as_ptr()),
-
-          PCWSTR(to_wstring("提示").as_ptr()),
-
-          MB_OK,
-
-        )
-
-      };
-
-      LRESULT(0)
-
-    }
-
-    WM_ERASEBKGND => {
-
-      let state = unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
-
-      let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
-
-      let mut rect = RECT::default();
-
-      let _ = unsafe { GetClientRect(hwnd, &mut rect) };
-
-      unsafe { FillRect(hdc, &rect, state.bg_brush) };
-
-      LRESULT(1)
-
-    }
-
-    WM_CTLCOLORDLG | WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
-
-      let state = unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
-
-      let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
-
-      unsafe {
-
-        SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, rgb(48, 48, 48));
-
-        SetBkColor(hdc, rgb(245, 246, 248));
-
-      }
-
-      LRESULT(state.bg_brush.0 as isize)
-
-    }
-
-    WM_CTLCOLOREDIT => {
-
-      let state = unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
-
-      let hdc = HDC(wparam.0 as *mut core::ffi::c_void);
-
-      unsafe {
-
-        SetBkMode(hdc, OPAQUE);
-        SetTextColor(hdc, rgb(32, 32, 32));
-
-        SetBkColor(hdc, rgb(255, 255, 255));
-
-      }
-
-      LRESULT(state.edit_brush.0 as isize)
-
-    }
-
-    WM_DESTROY => {
-
-      let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState };
-      let _ = unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0) };
-
-      if !ptr.is_null() {
-
-        let state = unsafe { Box::from_raw(ptr) };
-
-        if !state.action_sent {
-
-          let _ = state.sender.send(SessionAction::EndConversation);
-
-        }
-
-        unsafe {
-
-          let _ = DeleteObject(state.bg_brush);
-
-          let _ = DeleteObject(state.edit_brush);
-
-          let _ = DeleteObject(state.font);
-
-        }
-
-      }
-
-      unsafe { PostQuitMessage(0) };
-
-      LRESULT(0)
-
-    }
-
-    _ => unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
-
-  }
-
-}
-
-
-
-unsafe extern "system" fn edit_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-  if msg == WM_KEYDOWN {
-    let ctrl_down = unsafe { ((GetKeyState(VK_CONTROL.0 as i32) as u16) & 0x8000) != 0 };
-    if ctrl_down && (wparam.0 as u32) == 'A' as u32 {
-      let _ = unsafe { SendMessageW(hwnd, EM_SETSEL, WPARAM(0), LPARAM(-1)) };
-      return LRESULT(0);
-    }
-  }
-
-  let prev = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
-  if prev != 0 {
-    let proc: WNDPROC = unsafe { core::mem::transmute(prev) };
-    return unsafe { CallWindowProcW(proc, hwnd, msg, wparam, lparam) };
-  }
-  unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
-}
-
-unsafe extern "system" fn send_wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-  if msg == WM_KEYDOWN && (wparam.0 as u32) == VK_RETURN.0 as u32 {
-    let _ = unsafe { SendMessageW(hwnd, BM_CLICK, WPARAM(0), LPARAM(0)) };
-    return LRESULT(0);
-  }
-
-  let prev = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) };
-  if prev != 0 {
-    let proc: WNDPROC = unsafe { core::mem::transmute(prev) };
-    return unsafe { CallWindowProcW(proc, hwnd, msg, wparam, lparam) };
-  }
-
-  unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
 }
 /// 创建按钮控件。
-fn create_button(hwnd: HWND, text: &str, x: i32, y: i32, width: i32, height: i32, id: usize, flat: bool) -> HWND {
-  unsafe {
+fn create_button(
+    hwnd: HWND,
+    text: &str,
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+    id: usize,
+    flat: bool,
+) -> HWND {
+    unsafe {
+        let mut style = WS_CHILD | WS_VISIBLE;
 
-    let mut style = WS_CHILD | WS_VISIBLE;
+        if flat {
+            style = WINDOW_STYLE(style.0 | BS_FLAT as u32);
+        }
 
-    if flat {
-
-      style = WINDOW_STYLE(style.0 | BS_FLAT as u32);
-
+        windows::Win32::UI::WindowsAndMessaging::CreateWindowExW(
+            Default::default(),
+            PCWSTR(to_wstring("BUTTON").as_ptr()),
+            PCWSTR(to_wstring(text).as_ptr()),
+            style,
+            x,
+            y,
+            width,
+            height,
+            hwnd,
+            HMENU(id as usize as *mut core::ffi::c_void),
+            None,
+            None,
+        )
+        .unwrap_or(HWND(null_mut()))
     }
-
-    windows::Win32::UI::WindowsAndMessaging::CreateWindowExW(
-
-      Default::default(),
-
-      PCWSTR(to_wstring("BUTTON").as_ptr()),
-
-      PCWSTR(to_wstring(text).as_ptr()),
-
-      style,
-
-      x,
-
-      y,
-
-      width,
-
-      height,
-
-      hwnd,
-
-      HMENU(id as usize as *mut core::ffi::c_void),
-
-      None,
-
-      None,
-
-    )
-
-    .unwrap_or(HWND(null_mut()))
-
-  }
-
 }
-
-
 
 /// 创建静态文本控件。
 fn create_label(hwnd: HWND, text: &str, x: i32, y: i32, width: i32, height: i32) -> HWND {
-  unsafe {
-
-    windows::Win32::UI::WindowsAndMessaging::CreateWindowExW(
-
-      Default::default(),
-
-      PCWSTR(to_wstring("STATIC").as_ptr()),
-
-      PCWSTR(to_wstring(text).as_ptr()),
-
-      WS_CHILD | WS_VISIBLE,
-
-      x,
-
-      y,
-
-      width,
-
-      height,
-
-      hwnd,
-
-      HMENU(null_mut()),
-
-      None,
-
-      None,
-
-    )
-
-    .unwrap_or(HWND(null_mut()))
-
-  }
-
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::CreateWindowExW(
+            Default::default(),
+            PCWSTR(to_wstring("STATIC").as_ptr()),
+            PCWSTR(to_wstring(text).as_ptr()),
+            WS_CHILD | WS_VISIBLE,
+            x,
+            y,
+            width,
+            height,
+            hwnd,
+            HMENU(null_mut()),
+            None,
+            None,
+        )
+        .unwrap_or(HWND(null_mut()))
+    }
 }
-
-
 
 /// 读取编辑框内容。
 fn read_edit_text(hwnd: HWND) -> String {
-  unsafe {
+    unsafe {
+        let length = GetWindowTextLengthW(hwnd);
 
-    let length = GetWindowTextLengthW(hwnd);
+        if length == 0 {
+            return String::new();
+        }
 
-    if length == 0 {
+        let mut buffer = vec![0u16; (length + 1) as usize];
 
-      return String::new();
+        let read = GetWindowTextW(hwnd, &mut buffer);
 
+        if read == 0 {
+            return String::new();
+        }
+
+        String::from_utf16_lossy(&buffer[..read as usize])
     }
-
-    let mut buffer = vec![0u16; (length + 1) as usize];
-
-    let read = GetWindowTextW(hwnd, &mut buffer);
-
-    if read == 0 {
-
-      return String::new();
-
-    }
-
-    String::from_utf16_lossy(&buffer[..read as usize])
-
-  }
-
 }
-
-
 
 /// 将 Rust 字符串转换为 Win32 宽字符串（以 0 结尾）。
 fn to_wstring(input: &str) -> Vec<u16> {
-  OsStr::new(input).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(input)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 fn normalize_windows_newlines(input: &str) -> String {
-  let mut out = String::with_capacity(input.len() + 8);
-  let mut chars = input.chars().peekable();
-  while let Some(ch) = chars.next() {
-    match ch {
-      '\r' => {
-        if matches!(chars.peek(), Some('\n')) {
-          chars.next();
+    let mut out = String::with_capacity(input.len() + 8);
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\r' => {
+                if matches!(chars.peek(), Some('\n')) {
+                    chars.next();
+                }
+                out.push('\r');
+                out.push('\n');
+            }
+            '\n' => {
+                out.push('\r');
+                out.push('\n');
+            }
+            _ => out.push(ch),
         }
-        out.push('\r');
-        out.push('\n');
-      }
-      '\n' => {
-        out.push('\r');
-        out.push('\n');
-      }
-      _ => out.push(ch),
     }
-  }
-  out
+    out
 }
 
 fn apply_responsive_layout(hwnd: HWND, state: &WindowState) {
-  unsafe {
-    let mut rect = RECT::default();
-    let _ = GetClientRect(hwnd, &mut rect);
+    unsafe {
+        let mut rect = RECT::default();
+        let _ = GetClientRect(hwnd, &mut rect);
 
-    let client_width = (rect.right - rect.left).max(360);
-    let client_height = (rect.bottom - rect.top).max(280);
+        let client_width = (rect.right - rect.left).max(360);
+        let client_height = (rect.bottom - rect.top).max(280);
 
-    let padding = 16;
-    let header_y = padding;
-    let pin_w = 44;
-    let pin_h = 32;
-    let pin_x = (client_width - padding - pin_w).max(padding);
-    set_control_bounds(state.pin_button, pin_x, header_y - 4, pin_w, pin_h);
+        let padding = 16;
+        let header_y = padding;
+        let pin_w = 44;
+        let pin_h = 32;
+        let pin_x = (client_width - padding - pin_w).max(padding);
+        set_control_bounds(state.pin_button, pin_x, header_y - 4, pin_w, pin_h);
 
-    let countdown_w = 160.min((client_width - padding * 2 - pin_w - 130).max(80));
-    set_control_bounds(state.countdown_label, padding, header_y, countdown_w, 24);
+        let countdown_w = 160.min((client_width - padding * 2 - pin_w - 130).max(80));
+        set_control_bounds(state.countdown_label, padding, header_y, countdown_w, 24);
 
-    let loading_icon_x = padding + countdown_w + 10;
-    set_control_bounds(state.loading_icon, loading_icon_x, header_y, 20, 24);
-    let loading_text_w = (pin_x - loading_icon_x - 26).max(40);
-    set_control_bounds(state.loading_text, loading_icon_x + 24, header_y, loading_text_w, 24);
+        let loading_icon_x = padding + countdown_w + 10;
+        set_control_bounds(state.loading_icon, loading_icon_x, header_y, 20, 24);
+        let loading_text_w = (pin_x - loading_icon_x - 26).max(40);
+        set_control_bounds(
+            state.loading_text,
+            loading_icon_x + 24,
+            header_y,
+            loading_text_w,
+            24,
+        );
 
-    let button_h = 36;
-    let button_gap = if client_width >= 820 { 20 } else { 12 };
-    let buttons_row_w = (client_width - padding * 2).max(320);
-    let button_w = ((buttons_row_w - button_gap * 3) / 4).max(72);
-    let total_buttons_w = button_w * 4 + button_gap * 3;
-    let button_start_x = padding + ((buttons_row_w - total_buttons_w).max(0) / 2);
-    let buttons_y = (client_height - padding - button_h).max(120);
+        let button_h = 36;
+        let button_gap = if client_width >= 820 { 20 } else { 12 };
+        let buttons_row_w = (client_width - padding * 2).max(320);
+        let button_w = ((buttons_row_w - button_gap * 3) / 4).max(72);
+        let total_buttons_w = button_w * 4 + button_gap * 3;
+        let button_start_x = padding + ((buttons_row_w - total_buttons_w).max(0) / 2);
+        let buttons_y = (client_height - padding - button_h).max(120);
 
-    set_control_bounds(state.btn_end, button_start_x, buttons_y, button_w, button_h);
-    set_control_bounds(
-      state.btn_continue,
-      button_start_x + button_w + button_gap,
-      buttons_y,
-      button_w,
-      button_h,
-    );
-    set_control_bounds(
-      state.btn_original,
-      button_start_x + (button_w + button_gap) * 2,
-      buttons_y,
-      button_w,
-      button_h,
-    );
-    set_control_bounds(
-      state.btn_send,
-      button_start_x + (button_w + button_gap) * 3,
-      buttons_y,
-      button_w,
-      button_h,
-    );
+        set_control_bounds(state.btn_end, button_start_x, buttons_y, button_w, button_h);
+        set_control_bounds(
+            state.btn_continue,
+            button_start_x + button_w + button_gap,
+            buttons_y,
+            button_w,
+            button_h,
+        );
+        set_control_bounds(
+            state.btn_original,
+            button_start_x + (button_w + button_gap) * 2,
+            buttons_y,
+            button_w,
+            button_h,
+        );
+        set_control_bounds(
+            state.btn_send,
+            button_start_x + (button_w + button_gap) * 3,
+            buttons_y,
+            button_w,
+            button_h,
+        );
 
-    let edit_x = padding;
-    let edit_y = header_y + 36;
-    let edit_w = (client_width - padding * 2).max(220);
-    let edit_h = (buttons_y - edit_y - 14).max(100);
-    set_control_bounds(state.edit, edit_x, edit_y, edit_w, edit_h);
-  }
+        let edit_x = padding;
+        let edit_y = header_y + 36;
+        let edit_w = (client_width - padding * 2).max(220);
+        let edit_h = (buttons_y - edit_y - 14).max(100);
+        set_control_bounds(state.edit, edit_x, edit_y, edit_w, edit_h);
+    }
 }
 
 fn set_control_bounds(control: HWND, x: i32, y: i32, width: i32, height: i32) {
-  if control.0.is_null() {
-    return;
-  }
+    if control.0.is_null() {
+        return;
+    }
 
-  unsafe {
-    let _ = SetWindowPos(
-      control,
-      HWND(null_mut()),
-      x.max(0),
-      y.max(0),
-      width.max(1),
-      height.max(1),
-      SWP_NOZORDER,
-    );
-  }
+    unsafe {
+        let _ = SetWindowPos(
+            control,
+            HWND(null_mut()),
+            x.max(0),
+            y.max(0),
+            width.max(1),
+            height.max(1),
+            SWP_NOZORDER,
+        );
+    }
 }
-
 
 fn loword(value: u32) -> u16 {
-
-  (value & 0xFFFF) as u16
-
+    (value & 0xFFFF) as u16
 }
-
-
 
 fn hiword(value: u32) -> u16 {
-
-  ((value >> 16) & 0xFFFF) as u16
-
+    ((value >> 16) & 0xFFFF) as u16
 }
-
-
 
 fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
-
-  COLORREF((r as u32) | ((g as u32) << 8) | ((b as u32) << 16))
-
+    COLORREF((r as u32) | ((g as u32) << 8) | ((b as u32) << 16))
 }
-
-
 
 /// 设置控件字体。
 fn set_control_font(hwnd: HWND, font: HFONT) {
-  unsafe {
-
-    let _ = SendMessageW(hwnd, WM_SETFONT, WPARAM(font.0 as usize), LPARAM(1));
-
-  }
-
+    unsafe {
+        let _ = SendMessageW(hwnd, WM_SETFONT, WPARAM(font.0 as usize), LPARAM(1));
+    }
 }
-
-
 
 /// 将剩余毫秒数格式化为 mm:ss。
 fn format_remaining(ms: u32) -> String {
-  let total = ms / 1000;
+    let total = ms / 1000;
 
-  let minutes = total / 60;
+    let minutes = total / 60;
 
-  let seconds = total % 60;
+    let seconds = total % 60;
 
-  format!("{:02}:{:02}", minutes, seconds)
-
+    format!("{:02}:{:02}", minutes, seconds)
 }
 
 /// 向窗口线程回投增强结果；如果投递失败，立即释放内存避免泄漏。
 fn post_enhance_message(hwnd: HWND, message: u32, payload: String) {
-  unsafe {
-    let ptr = Box::into_raw(Box::new(payload));
-    if PostMessageW(hwnd, message, WPARAM(0), LPARAM(ptr as isize)).is_err() {
-      log_debug(format!("ui: post message failed msg={}", message));
-      let _ = Box::from_raw(ptr);
+    unsafe {
+        let ptr = Box::into_raw(Box::new(payload));
+        if PostMessageW(hwnd, message, WPARAM(0), LPARAM(ptr as isize)).is_err() {
+            log_debug(format!("ui: post message failed msg={}", message));
+            let _ = Box::from_raw(ptr);
+        }
     }
-  }
 }
-
-
 
 /// 切换加载态，避免重复点击。
 fn set_loading(state: &WindowState, loading: bool) {
-  let (icon, status, label) = if loading {
-    ("⏳", "正在增强...", "⏳ 增强中...")
-  } else {
-    ("⏳", "等待增强", "继续增强")
-  };
+    let (icon, status, label) = if loading {
+        ("⏳", "正在增强...", "⏳ 增强中...")
+    } else {
+        ("⏳", "等待增强", "继续增强")
+    };
 
-  unsafe {
-    log_debug(format!("ui: loading state changed loading={}", loading));
+    unsafe {
+        log_debug(format!("ui: loading state changed loading={}", loading));
 
-    let _ = SetWindowTextW(state.btn_continue, PCWSTR(to_wstring(label).as_ptr()));
-    let _ = SetWindowTextW(state.loading_icon, PCWSTR(to_wstring(icon).as_ptr()));
-    let _ = SetWindowTextW(state.loading_text, PCWSTR(to_wstring(status).as_ptr()));
-    let _ = ShowWindow(state.loading_icon, if loading { SW_SHOW } else { SW_HIDE });
-    let _ = ShowWindow(state.loading_text, if loading { SW_SHOW } else { SW_HIDE });
+        let _ = SetWindowTextW(state.btn_continue, PCWSTR(to_wstring(label).as_ptr()));
+        let _ = SetWindowTextW(state.loading_icon, PCWSTR(to_wstring(icon).as_ptr()));
+        let _ = SetWindowTextW(state.loading_text, PCWSTR(to_wstring(status).as_ptr()));
+        let _ = ShowWindow(state.loading_icon, if loading { SW_SHOW } else { SW_HIDE });
+        let _ = ShowWindow(state.loading_text, if loading { SW_SHOW } else { SW_HIDE });
 
-    let enable = !loading;
+        let enable = !loading;
 
-    let _ = EnableWindow(state.btn_continue, enable);
+        let _ = EnableWindow(state.btn_continue, enable);
 
-    let _ = EnableWindow(state.btn_send, enable);
+        let _ = EnableWindow(state.btn_send, enable);
 
-    let _ = EnableWindow(state.btn_original, enable);
+        let _ = EnableWindow(state.btn_original, enable);
 
-    // 允许用户在增强中主动结束会话，避免“卡住无法退出”的体感。
-    let _ = EnableWindow(state.btn_end, true);
+        // 允许用户在增强中主动结束会话，避免“卡住无法退出”的体感。
+        let _ = EnableWindow(state.btn_end, true);
 
-    let _ = EnableWindow(state.pin_button, enable);
+        let _ = EnableWindow(state.pin_button, enable);
 
-    let _ = EnableWindow(state.edit, enable);
-
-  }
-
+        let _ = EnableWindow(state.edit, enable);
+    }
 }
-
-
 
 /// 固定窗口状态持久化路径。
 fn pin_state_path() -> std::path::PathBuf {
-  let project_root = detect_project_root();
+    let project_root = detect_project_root();
 
-  let ace_dir = get_ace_dir(&project_root);
+    let ace_dir = get_ace_dir(&project_root);
 
-  ace_dir.join("pin.json")
-
+    ace_dir.join("pin.json")
 }
-
-
 
 /// 读取固定窗口状态。
 fn load_pin_state() -> bool {
-  let path = pin_state_path();
+    let path = pin_state_path();
 
-  if !path.exists() {
+    if !path.exists() {
+        return false;
+    }
 
-    return false;
+    let content = fs::read_to_string(path).unwrap_or_default();
 
-  }
-
-  let content = fs::read_to_string(path).unwrap_or_default();
-
-  serde_json::from_str::<PinState>(&content)
-
-    .map(|state| state.pinned)
-
-    .unwrap_or(false)
-
+    serde_json::from_str::<PinState>(&content)
+        .map(|state| state.pinned)
+        .unwrap_or(false)
 }
-
-
 
 /// 保存固定窗口状态。
 fn save_pin_state(pinned: bool) {
-  let path = pin_state_path();
+    let path = pin_state_path();
 
-  if let Some(parent) = path.parent() {
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
 
-    let _ = fs::create_dir_all(parent);
+    let content = serde_json::to_string_pretty(&PinState { pinned })
+        .unwrap_or_else(|_| format!("{{\"pinned\":{}}}", pinned));
 
-  }
-
-  let content = serde_json::to_string_pretty(&PinState { pinned })
-
-    .unwrap_or_else(|_| format!("{{\"pinned\":{}}}", pinned));
-
-  let _ = fs::write(path, content);
-
+    let _ = fs::write(path, content);
 }
