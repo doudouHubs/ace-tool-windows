@@ -1,4 +1,4 @@
-﻿mod config;
+mod config;
 mod enhancer;
 mod index;
 mod logging;
@@ -190,7 +190,6 @@ fn handle_enhance_prompt(
     }
 
     let provider_kind = resolve_provider_kind(&args, config)?;
-    let codex_cmd = resolve_codex_cmd(&args, config);
     let enhance_timeout_sec = resolve_enhance_timeout_sec(config, provider_kind);
     log_debug(format!(
         "enhance_prompt: provider={} prompt_len={} history_len={} timeout={}s",
@@ -236,14 +235,18 @@ fn handle_enhance_prompt(
         }
         EnhanceProviderKind::Codex => {
             log_debug(format!(
-                "enhance_prompt: create codex provider cmd={} reasoning={} timeout={}s",
-                codex_cmd, config.codex_reasoning_effort, enhance_timeout_sec
+                "enhance_prompt: create codex provider api_base={} model={} timeout={}s",
+                config.codex_api_base, config.codex_model, enhance_timeout_sec
             ));
-            Arc::new(CodexProvider::new(
-                codex_cmd,
-                config.codex_reasoning_effort.clone(),
-                enhance_timeout_sec,
-            ))
+            Arc::new(
+                CodexProvider::new(
+                    config.codex_api_base.clone(),
+                    config.codex_api_key.clone(),
+                    config.codex_model.clone(),
+                    enhance_timeout_sec,
+                )
+                .map_err(|e| format!("Error: {e}"))?,
+            )
         }
     };
     log_debug(format!(
@@ -668,8 +671,9 @@ mod tests {
             exclude_patterns: Vec::new(),
             enable_log: false,
             enhance_provider: provider.to_string(),
-            codex_cmd: "codex".to_string(),
-            codex_reasoning_effort: "low".to_string(),
+            codex_api_base: "https://example.com/v1".to_string(),
+            codex_api_key: "token".to_string(),
+            codex_model: "gpt-5.4".to_string(),
             enhance_timeout_sec: 90,
             enhance_timeout_explicit: false,
             ui_timeout_sec: 480,
@@ -831,16 +835,6 @@ fn resolve_provider_kind(
 
     Ok(configured)
 }
-
-fn resolve_codex_cmd(args: &serde_json::Value, config: &Config) -> String {
-    args.get("codex_cmd")
-        .and_then(|v| v.as_str())
-        .map(|value| value.trim())
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| config.codex_cmd.clone())
-}
-
 fn resolve_enhance_timeout_sec(config: &Config, provider_kind: EnhanceProviderKind) -> u64 {
     if config.enhance_timeout_explicit {
         return config.enhance_timeout_sec;
@@ -860,6 +854,8 @@ fn classify_enhance_error(err: &str) -> &'static str {
         "auth"
     } else if lower.contains("403") {
         "forbidden"
+    } else if lower.contains("429") || lower.contains("rate limit") {
+        "rate_limit"
     } else if lower.contains("connect") || lower.contains("dns") || lower.contains("refused") {
         "network"
     } else {

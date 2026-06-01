@@ -1,366 +1,194 @@
-﻿use crate::enhancer::provider::{EnhanceProvider, EnhanceProviderKind};
+use crate::enhancer::provider::{EnhanceProvider, EnhanceProviderKind};
 use crate::mcp::log_debug;
-use crate::utils::encoding::decode_bytes_with_fallback;
 use futures::future::BoxFuture;
-use std::env;
-use std::fs::{self, File};
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use reqwest::Client;
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
+use serde_json::{Value, json};
+use std::time::Duration;
+use tokio::time::sleep;
 
-/// 本地 Codex 单次增强提供方。
+const MAX_RETRY_ATTEMPTS: usize = 3;
+const RETRYABLE_STATUS_CODES: [u16; 4] = [429, 502, 503, 504];
+
+/// 直连 GPT API 的 codex provider。
 pub struct CodexProvider {
-    command: String,
-    reasoning_effort: String,
+    api_base: String,
+    model: String,
     timeout: Duration,
+    client: Client,
 }
 
 impl CodexProvider {
-    pub fn new(command: String, reasoning_effort: String, timeout_sec: u64) -> Self {
-        Self {
-            command,
-            reasoning_effort,
-            timeout: Duration::from_secs(timeout_sec.max(10)),
-        }
-    }
-
-    fn enhance_once(&self, prompt: &str, history: &str) -> Result<String, String> {
-        let prompt_text = build_codex_prompt(prompt, history);
-        let primary_effort = self.reasoning_effort.trim().to_ascii_lowercase();
-        let primary_effort = if primary_effort.is_empty() {
-            "low".to_string()
-        } else {
-            primary_effort
-        };
-
-        let primary = self.run_codex_exec(&prompt_text, &primary_effort);
-        if primary.is_ok() {
-            return primary;
+    pub fn new(
+        api_base: String,
+        api_key: String,
+        model: String,
+        timeout_sec: u64,
+    ) -> Result<Self, String> {
+        let api_base = api_base.trim().trim_end_matches('/').to_string();
+        if api_base.is_empty() {
+            return Err("Codex API base URL is required.".to_string());
         }
 
-        let primary_err = primary
-            .err()
-            .unwrap_or_else(|| "Unknown codex error".to_string());
-        if !is_timeout_error(&primary_err) || primary_effort == "none" {
-            return Err(primary_err);
+        let api_key = api_key.trim().to_string();
+        if api_key.is_empty() {
+            return Err("Codex API key is required.".to_string());
         }
 
-        log_debug(format!(
-            "enhance_prompt: codex timeout with reasoning={}, retry reasoning=none",
-            primary_effort
-        ));
-        match self.run_codex_exec(&prompt_text, "none") {
-            Ok(text) => Ok(text),
-            Err(retry_err) => Err(format!(
-                "{} Retry with reasoning=none failed: {}",
-                primary_err, retry_err
-            )),
-        }
-    }
-
-    fn run_codex_exec(&self, prompt_text: &str, reasoning_effort: &str) -> Result<String, String> {
-        let output_path = build_temp_path("codex-last");
-        let stderr_path = build_temp_path("codex-stderr");
-        let command_path =
-            resolve_codex_command(&self.command).unwrap_or_else(|| PathBuf::from(&self.command));
-
-        let stderr_file = File::create(&stderr_path)
-            .map_err(|err| format!("Failed to create stderr temp file: {err}"))?;
-
-        log_debug(format!(
-            "enhance_prompt: codex exec start timeout={}s reasoning={} cmd={}",
-            self.timeout.as_secs(),
-            reasoning_effort,
-            command_path.display()
-        ));
-
-        let mut child = build_codex_command(&command_path, reasoning_effort, &output_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(stderr_file))
-            .spawn()
-            .map_err(|err| {
-                format!(
-                    "Failed to start codex command '{}': {err}",
-                    command_path.display()
-                )
-            })?;
-
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(prompt_text.as_bytes())
-                .map_err(|err| format!("Failed to write prompt to codex stdin: {err}"))?;
+        let model = model.trim().to_string();
+        if model.is_empty() {
+            return Err("Codex model is required.".to_string());
         }
 
-        let started = Instant::now();
-        let status = match wait_child_with_timeout(&mut child, self.timeout) {
-            Ok(status) => status,
-            Err(wait_err) => {
-                let stderr_text = read_text_file(&stderr_path);
-                cleanup_temp_files(&[output_path, stderr_path]);
-                let detail = sanitize_error_detail(stderr_text.trim());
-                if detail.is_empty() {
-                    return Err(wait_err);
-                }
-                return Err(format!("{} stderr: {}", wait_err, detail));
-            }
-        };
-        let elapsed = started.elapsed().as_millis();
-
-        let stderr_text = read_text_file(&stderr_path);
-
-        if !status.success() {
-            let exit_code = status.code().unwrap_or(-1);
-            let detail = sanitize_error_detail(stderr_text.trim());
-            log_debug(format!(
-                "enhance_prompt: codex exec failed exit={} elapsed={}ms stderr_len={}",
-                exit_code,
-                elapsed,
-                detail.chars().count()
-            ));
-            cleanup_temp_files(&[output_path, stderr_path]);
-            if detail.is_empty() {
-                return Err(format!(
-                    "Codex enhancement failed with exit code {}.",
-                    exit_code
-                ));
-            }
-            return Err(format!(
-                "Codex enhancement failed (exit={}): {}",
-                exit_code, detail
-            ));
-        }
-
-        let output_text = read_text_file(&output_path);
-        cleanup_temp_files(&[output_path, stderr_path]);
-
-        let cleaned = clean_codex_output(&output_text);
-        if cleaned.is_empty() {
-            return Err("Codex returned empty enhancement result.".to_string());
-        }
-
-        log_debug(format!(
-            "enhance_prompt: codex exec done elapsed={}ms",
-            elapsed
-        ));
-        Ok(cleaned)
-    }
-}
-
-fn is_timeout_error(err: &str) -> bool {
-    err.to_ascii_lowercase().contains("timed out")
-}
-
-fn build_codex_command(command_path: &Path, reasoning_effort: &str, output_path: &Path) -> Command {
-    let config_arg = format!(
-        "model_reasoning_effort='{}'",
-        reasoning_effort.replace('\'', "")
-    );
-    let args = [
-        "exec".to_string(),
-        "-c".to_string(),
-        config_arg,
-        "-c".to_string(),
-        "mcp_servers.mcp-router.enabled=false".to_string(),
-        "--color".to_string(),
-        "never".to_string(),
-        "--output-last-message".to_string(),
-        output_path.display().to_string(),
-        "--skip-git-repo-check".to_string(),
-        "-".to_string(),
-    ];
-
-    if is_batch_launcher(command_path) {
-        let mut command = Command::new("cmd.exe");
-        command.arg("/c").arg(build_cmd_line(command_path, &args));
-        return command;
-    }
-
-    let mut command = Command::new(command_path);
-    for arg in args {
-        command.arg(arg);
-    }
-    command
-}
-
-fn resolve_codex_command(command: &str) -> Option<PathBuf> {
-    let trimmed = command.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let direct_path = PathBuf::from(trimmed);
-    if direct_path.is_file() {
-        return normalize_codex_path(&direct_path);
-    }
-
-    find_in_path(trimmed)
-        .and_then(|path| normalize_codex_path(&path))
-        .or_else(find_windows_codex_fallback)
-}
-
-fn normalize_codex_path(path: &Path) -> Option<PathBuf> {
-    if !path.is_file() {
-        return None;
-    }
-
-    if let Some(sibling) = find_windows_launcher_sibling(path) {
-        return normalize_codex_path(&sibling);
-    }
-
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .map(|value| value.to_ascii_lowercase())
-        .unwrap_or_default();
-
-    if matches!(extension.as_str(), "cmd" | "bat") {
-        return resolve_volta_shim(path).or_else(|| Some(path.to_path_buf()));
-    }
-
-    Some(path.to_path_buf())
-}
-
-fn find_windows_launcher_sibling(path: &Path) -> Option<PathBuf> {
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
-        .unwrap_or_default();
-    if !extension.is_empty() {
-        return None;
-    }
-
-    let stem = path.file_stem()?.to_str()?;
-    let parent = path.parent()?;
-    for candidate in [
-        parent.join(format!("{}.exe", stem)),
-        parent.join(format!("{}.cmd", stem)),
-        parent.join(format!("{}.bat", stem)),
-    ] {
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-fn resolve_volta_shim(path: &Path) -> Option<PathBuf> {
-    let file_name = path.file_name()?.to_str()?.to_ascii_lowercase();
-    if file_name != "codex.cmd" && file_name != "codex.bat" {
-        return None;
-    }
-
-    let local_app_data = env::var_os("LOCALAPPDATA")?;
-    let vendor = PathBuf::from(local_app_data)
-        .join("Volta")
-        .join("tools")
-        .join("image")
-        .join("packages")
-        .join("@openai")
-        .join("codex")
-        .join("node_modules")
-        .join("@openai")
-        .join("codex")
-        .join("node_modules")
-        .join("@openai")
-        .join("codex-win32-x64")
-        .join("vendor")
-        .join("x86_64-pc-windows-msvc")
-        .join("codex")
-        .join("codex.exe");
-
-    if vendor.is_file() { Some(vendor) } else { None }
-}
-
-fn find_in_path(command: &str) -> Option<PathBuf> {
-    let has_extension = Path::new(command).extension().is_some();
-    let path_var = env::var_os("PATH")?;
-
-    for dir in env::split_paths(&path_var) {
-        if !has_extension {
-            for candidate in [
-                dir.join(format!("{}.exe", command)),
-                dir.join(format!("{}.cmd", command)),
-                dir.join(format!("{}.bat", command)),
-            ] {
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-
-        let exact = dir.join(command);
-        if exact.is_file() {
-            return Some(exact);
-        }
-    }
-
-    None
-}
-
-fn find_windows_codex_fallback() -> Option<PathBuf> {
-    let local_app_data = env::var_os("LOCALAPPDATA");
-    let app_data = env::var_os("APPDATA");
-
-    let mut candidates = Vec::new();
-
-    if let Some(local_app_data) = local_app_data {
-        let local_root = PathBuf::from(local_app_data);
-        candidates.push(local_root.join("Volta").join("bin").join("codex.cmd"));
-        candidates.push(
-            local_root
-                .join("Volta")
-                .join("tools")
-                .join("image")
-                .join("packages")
-                .join("@openai")
-                .join("codex")
-                .join("node_modules")
-                .join("@openai")
-                .join("codex")
-                .join("node_modules")
-                .join("@openai")
-                .join("codex-win32-x64")
-                .join("vendor")
-                .join("x86_64-pc-windows-msvc")
-                .join("codex")
-                .join("codex.exe"),
+        let mut headers = HeaderMap::new();
+        let auth_header = format!("Bearer {}", api_key);
+        headers.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&auth_header).map_err(|e| e.to_string())?,
         );
-    }
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
-    if let Some(app_data) = app_data {
-        candidates.push(PathBuf::from(app_data).join("npm").join("codex.cmd"));
-    }
+        let timeout = Duration::from_secs(timeout_sec.max(10));
+        let client = Client::builder()
+            .default_headers(headers)
+            .timeout(timeout)
+            .build()
+            .map_err(|e| e.to_string())?;
 
-    candidates
-        .into_iter()
-        .find_map(|path| normalize_codex_path(&path))
-}
-
-fn is_batch_launcher(path: &Path) -> bool {
-    path.extension()
-        .and_then(|value| value.to_str())
-        .map(|value| {
-            let lower = value.to_ascii_lowercase();
-            lower == "cmd" || lower == "bat"
+        Ok(Self {
+            api_base,
+            model,
+            timeout,
+            client,
         })
-        .unwrap_or(false)
-}
-
-fn build_cmd_line(command_path: &Path, args: &[String]) -> String {
-    let mut command_line = quote_cmd_arg(command_path.as_os_str().to_string_lossy().as_ref());
-    for arg in args {
-        command_line.push(' ');
-        command_line.push_str(&quote_cmd_arg(arg));
     }
-    command_line
+
+    async fn enhance_once(&self, prompt: &str, history: &str) -> Result<String, String> {
+        let (system_prompt, user_prompt) = build_codex_messages(prompt, history);
+        let payload = build_chat_completion_payload(&self.model, &system_prompt, &user_prompt);
+        let url = format!("{}/chat/completions", self.api_base);
+
+        let mut last_error = String::new();
+
+        for attempt in 1..=MAX_RETRY_ATTEMPTS {
+            let attempt_result = self
+                .send_chat_completion_request(&url, &payload, attempt)
+                .await;
+
+            match attempt_result {
+                Ok(content) => {
+                    let cleaned = clean_codex_output(&content);
+                    if cleaned.is_empty() {
+                        return Err("Codex API returned empty enhancement result.".to_string());
+                    }
+                    return Ok(cleaned);
+                }
+                Err(err) => {
+                    last_error = err.message;
+                    if !err.retryable || attempt == MAX_RETRY_ATTEMPTS {
+                        break;
+                    }
+
+                    let delay = err
+                        .retry_after
+                        .unwrap_or_else(|| backoff_delay_for_attempt(attempt));
+                    log_debug(format!(
+                        "enhance_prompt: codex retry scheduled attempt={} wait={}ms",
+                        attempt + 1,
+                        delay.as_millis()
+                    ));
+                    sleep(delay).await;
+                }
+            }
+        }
+
+        if last_error.is_empty() {
+            Err("Codex API request failed after retries.".to_string())
+        } else if MAX_RETRY_ATTEMPTS > 1 {
+            Err(format!(
+                "{} Retried {} times.",
+                last_error, MAX_RETRY_ATTEMPTS
+            ))
+        } else {
+            Err(last_error)
+        }
+    }
+
+    async fn send_chat_completion_request(
+        &self,
+        url: &str,
+        payload: &Value,
+        attempt: usize,
+    ) -> Result<String, CodexAttemptError> {
+        log_debug(format!(
+            "enhance_prompt: codex api request attempt={} model={}",
+            attempt, self.model
+        ));
+
+        let response = self
+            .client
+            .post(url)
+            .json(payload)
+            .send()
+            .await
+            .map_err(|err| self.map_request_error(err))?;
+
+        let status = response.status().as_u16();
+        let retry_after = parse_retry_after_seconds(response.headers());
+        let response_text = response.text().await.map_err(|err| CodexAttemptError {
+            message: format!("Failed to read Codex API response: {err}"),
+            retryable: false,
+            retry_after: None,
+        })?;
+
+        if !(200..=299).contains(&status) {
+            return Err(CodexAttemptError {
+                message: map_http_error(status, &response_text),
+                retryable: is_retryable_status(status),
+                retry_after,
+            });
+        }
+
+        parse_chat_completion_content(&response_text).map_err(|message| CodexAttemptError {
+            message,
+            retryable: false,
+            retry_after: None,
+        })
+    }
+
+    fn map_request_error(&self, err: reqwest::Error) -> CodexAttemptError {
+        if err.is_timeout() {
+            return CodexAttemptError {
+                message: format!(
+                    "Codex API request timed out ({} seconds): {}",
+                    self.timeout.as_secs(),
+                    err
+                ),
+                retryable: true,
+                retry_after: None,
+            };
+        }
+
+        if err.is_connect() {
+            return CodexAttemptError {
+                message: format!("Failed to connect to Codex API: {}", err),
+                retryable: true,
+                retry_after: None,
+            };
+        }
+
+        CodexAttemptError {
+            message: format!("Codex API request failed: {}", err),
+            retryable: false,
+            retry_after: None,
+        }
+    }
 }
 
-fn quote_cmd_arg(value: &str) -> String {
-    let escaped = value.replace('"', "\"\"");
-    format!("\"{}\"", escaped)
+struct CodexAttemptError {
+    message: String,
+    retryable: bool,
+    retry_after: Option<Duration>,
 }
 
 impl EnhanceProvider for CodexProvider {
@@ -373,59 +201,146 @@ impl EnhanceProvider for CodexProvider {
         prompt: &'a str,
         conversation_history: &'a str,
     ) -> BoxFuture<'a, Result<String, String>> {
-        Box::pin(async move { self.enhance_once(prompt, conversation_history) })
+        Box::pin(async move { self.enhance_once(prompt, conversation_history).await })
     }
 }
 
-fn wait_child_with_timeout(child: &mut Child, timeout: Duration) -> Result<ExitStatus, String> {
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(status),
-            Ok(None) => {
-                if started.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!(
-                        "Enhancement timed out ({} seconds).",
-                        timeout.as_secs()
-                    ));
-                }
-                thread::sleep(Duration::from_millis(120));
-            }
-            Err(err) => return Err(format!("Failed to wait codex process: {err}")),
-        }
-    }
-}
+fn build_codex_messages(prompt: &str, history: &str) -> (String, String) {
+    let system_prompt = "你是提示词增强助手。请把用户提供的原始提示词改写成一版可以直接交给模型执行的最终提示词。\
+\n要求：\
+\n1. 保留原始意图，不改变任务目标；结合对话上下文补足必要约束，但不要杜撰项目事实。\
+\n2. 信息量不能缩水：增强结果的细节、约束和可执行性必须至少不低于原文；若原文偏简略，应适度扩展为更具体版本。\
+\n3. 表达形式要自适应原始语义，不要套固定模板：可用自然分段、小标题或列表，但仅在有助于理解时使用，不强制。\
+\n4. 文本应便于浏览：避免超长单段，保持逻辑连贯与重点清晰。\
+\n5. 只输出增强后的最终提示词正文，不要输出分析、解释、标题前缀或 markdown 代码块。";
 
-fn build_codex_prompt(prompt: &str, history: &str) -> String {
-    format!(
-        "你是提示词增强助手。请把下面的原始提示词改写成一版可以直接交给模型执行的最终提示词。\n要求：\n1. 保留原始意图，不改变任务目标；结合对话上下文补足必要约束，但不要杜撰项目事实。\n2. 信息量不能缩水：增强结果的细节、约束和可执行性必须至少不低于原文；若原文偏简略，应适度扩展为更具体版本。\n3. 表达形式要自适应原始语义，不要套固定模板：可用自然分段、小标题或列表，但仅在有助于理解时使用，不强制。\n4. 文本应便于浏览：避免超长单段，保持逻辑连贯与重点清晰。\n5. 只输出增强后的最终提示词正文，不要输出分析、解释、标题前缀或 markdown 代码块。\n\n原始提示词：\n{}\n\n对话上下文：\n{}\n",
+    let user_prompt = format!(
+        "原始提示词：\n{}\n\n对话上下文：\n{}\n",
         prompt.trim(),
         history.trim()
-    )
+    );
+
+    (system_prompt.to_string(), user_prompt)
 }
 
-fn build_temp_path(prefix: &str) -> PathBuf {
-    let tick = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|value| value.as_millis())
-        .unwrap_or(0);
-    let pid = std::process::id();
-    std::env::temp_dir().join(format!("ace-tool-{}-{}-{}.txt", prefix, pid, tick))
+fn build_chat_completion_payload(model: &str, system_prompt: &str, user_prompt: &str) -> Value {
+    json!({
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": user_prompt
+            }
+        ],
+        "temperature": 0.1
+    })
 }
 
-fn read_text_file(path: &PathBuf) -> String {
-    match fs::read(path) {
-        Ok(bytes) => decode_bytes_with_fallback(&bytes),
-        Err(_) => String::new(),
+fn parse_chat_completion_content(response_text: &str) -> Result<String, String> {
+    let value: Value = serde_json::from_str(response_text)
+        .map_err(|err| format!("Failed to parse Codex API response JSON: {err}"))?;
+
+    let choices = value
+        .get("choices")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| "Codex API response missing choices array.".to_string())?;
+
+    let first_choice = choices
+        .first()
+        .ok_or_else(|| "Codex API response returned no choices.".to_string())?;
+
+    let message = first_choice
+        .get("message")
+        .ok_or_else(|| "Codex API response missing message field.".to_string())?;
+
+    extract_message_content(message)
+        .filter(|content| !content.trim().is_empty())
+        .ok_or_else(|| "Codex API response returned empty message content.".to_string())
+}
+
+fn extract_message_content(message: &Value) -> Option<String> {
+    if let Some(content) = message.get("content").and_then(|value| value.as_str()) {
+        return Some(content.to_string());
+    }
+
+    let parts = message.get("content").and_then(|value| value.as_array())?;
+    let mut text_parts = Vec::new();
+    for part in parts {
+        if let Some(text) = part.get("text").and_then(|value| value.as_str()) {
+            text_parts.push(text.trim().to_string());
+        }
+    }
+
+    if text_parts.is_empty() {
+        None
+    } else {
+        Some(text_parts.join("\n").trim().to_string())
     }
 }
 
-fn cleanup_temp_files(paths: &[PathBuf]) {
-    for path in paths {
-        let _ = fs::remove_file(path);
+fn map_http_error(status: u16, response_text: &str) -> String {
+    let detail = sanitize_error_detail(response_text);
+    match status {
+        401 => format!(
+            "Codex API authentication failed (401). Check --codex-api-key / ACE_TOOL_CODEX_API_KEY.{}",
+            format_error_detail_suffix(&detail)
+        ),
+        403 => format!(
+            "Codex API access forbidden (403). Check API key permissions or service policy.{}",
+            format_error_detail_suffix(&detail)
+        ),
+        429 => format!(
+            "Codex API rate limited (429). Check quota, credits, or retry later.{}",
+            format_error_detail_suffix(&detail)
+        ),
+        503 => format!(
+            "Codex API service temporarily unavailable (503).{}",
+            format_error_detail_suffix(&detail)
+        ),
+        500..=599 => format!(
+            "Codex API server error ({}).{}",
+            status,
+            format_error_detail_suffix(&detail)
+        ),
+        _ => format!(
+            "Codex API request failed with status {}.{}",
+            status,
+            format_error_detail_suffix(&detail)
+        ),
     }
+}
+
+fn format_error_detail_suffix(detail: &str) -> String {
+    if detail.is_empty() {
+        String::new()
+    } else {
+        format!(" Response: {}", detail)
+    }
+}
+
+fn is_retryable_status(status: u16) -> bool {
+    RETRYABLE_STATUS_CODES.contains(&status)
+}
+
+fn backoff_delay_for_attempt(attempt: usize) -> Duration {
+    match attempt {
+        1 => Duration::from_millis(800),
+        2 => Duration::from_millis(1600),
+        _ => Duration::from_millis(2400),
+    }
+}
+
+fn parse_retry_after_seconds(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
 }
 
 fn clean_codex_output(text: &str) -> String {
@@ -581,7 +496,7 @@ fn sanitize_error_detail(text: &str) -> String {
         .replace('\r', " ")
         .replace('\n', " ")
         .trim()
-        .replace("ace_", "ace_[REDACTED]_");
+        .to_string();
     if compact.chars().count() > 300 {
         let short: String = compact.chars().take(300).collect();
         format!("{}...", short)
@@ -592,7 +507,62 @@ fn sanitize_error_detail(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_codex_output, improve_readability_layout, strip_leading_chatter_line};
+    use super::{
+        backoff_delay_for_attempt, build_chat_completion_payload, clean_codex_output,
+        improve_readability_layout, is_retryable_status, map_http_error,
+        parse_chat_completion_content, strip_leading_chatter_line,
+    };
+    use std::time::Duration;
+
+    #[test]
+    fn build_payload_uses_model_and_messages() {
+        let payload = build_chat_completion_payload("gpt-5.4", "system", "user");
+        assert_eq!(
+            payload.get("model").and_then(|v| v.as_str()),
+            Some("gpt-5.4")
+        );
+        let messages = payload
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .expect("messages array");
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
+    fn parse_response_reads_string_content() {
+        let response =
+            r#"{"choices":[{"message":{"content":"增强后的提示词：请实现一个 CLI。"}}]}"#;
+        let content = parse_chat_completion_content(response).expect("content");
+        assert_eq!(content, "增强后的提示词：请实现一个 CLI。");
+    }
+
+    #[test]
+    fn parse_response_reads_text_parts() {
+        let response =
+            r#"{"choices":[{"message":{"content":[{"text":"第一行"},{"text":"第二行"}]}}]}"#;
+        let content = parse_chat_completion_content(response).expect("content");
+        assert_eq!(content, "第一行\n第二行");
+    }
+
+    #[test]
+    fn http_error_401_mentions_api_key() {
+        let err = map_http_error(401, r#"{"error":"bad key"}"#);
+        assert!(err.contains("ACE_TOOL_CODEX_API_KEY"));
+    }
+
+    #[test]
+    fn retryable_status_codes_are_expected() {
+        assert!(is_retryable_status(429));
+        assert!(is_retryable_status(503));
+        assert!(!is_retryable_status(401));
+    }
+
+    #[test]
+    fn backoff_grows_with_attempts() {
+        assert_eq!(backoff_delay_for_attempt(1), Duration::from_millis(800));
+        assert_eq!(backoff_delay_for_attempt(2), Duration::from_millis(1600));
+        assert_eq!(backoff_delay_for_attempt(3), Duration::from_millis(2400));
+    }
 
     #[test]
     fn clean_output_strips_label() {

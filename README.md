@@ -10,14 +10,19 @@ Windows 平台的 ACE MCP Server（Rust + Win32，stdio 模式），提供 `sear
 npm i -g ace-tool-windows
 ```
 
-## 2. 获取 Token
+## 2. 获取 Token / API Key
 
-在 <https://acemcp.heroman.wtf> 生成并复制 `token`。
+在 <https://acemcp.heroman.wtf> 生成并复制 `token`，供 `search_context` 使用。
+
+`codex` 模式下的增强请求改为直连 GPT API，需要额外准备：
+- `codex api base`（例如 `http://your-gpt-gateway/v1`）
+- `codex api key`
+- 可选 `model`（默认 `gpt-5.4`）
 
 建议：
 - 不要把 token 提交到 Git 仓库。
 - 优先通过环境变量或本地 MCP 配置注入。
-- 即便使用 `codex` provider，`search_context` 仍依赖远端服务，必须配置 token。
+- 即便使用 `codex` provider，`search_context` 仍依赖远端服务，必须配置 `--base-url` 与 `--token`。
 
 ## 3. 模式速览（先选一个）
 
@@ -31,18 +36,18 @@ ace-tool-win --base-url https://acemcp.heroman.wtf/relay/ --token <YOUR_TOKEN> -
 ```
 
 ### 3.2 `codex` 模式
-- 适合：希望本地走 Codex 增强，避免远端增强额度影响。
-- 依赖：本机可执行 `codex` CLI（`codex --version` 可用）。
+- 适合：希望增强链路直连 GPT API，减少本地 CLI 拉起与进程管理开销。
+- 依赖：可访问的 GPT API 网关、有效 API Key、可用模型名。
 - 启动示例：
 
 ```powershell
-ace-tool-win --base-url https://acemcp.heroman.wtf/relay/ --token <YOUR_TOKEN> --provider codex --codex-cmd codex --codex-reasoning-effort low
+ace-tool-win --base-url https://acemcp.heroman.wtf/relay/ --token <YOUR_TOKEN> --provider codex --codex-api-base http://your-gpt-gateway/v1 --codex-api-key <YOUR_GPT_KEY> --codex-model gpt-5.4
 ```
 
 关键说明：
 - `search_context` 始终走远端，所以即便是 `codex` 模式也必须有可用 token。
-- `codex_cmd` 推荐先用 `codex`（PATH 方案，跨设备更稳），确实找不到再写绝对路径。
-- 交互窗口支持自适应布局；Codex 首轮超时会自动重试一次 `reasoning_effort=none`。
+- `codex` 模式现在通过 HTTP 直连 GPT API，不再依赖本机 `codex` CLI。
+- 交互窗口支持自适应布局；增强结果仍会经过现有 UI 确认流程。
 
 ## 4. MCP 配置模板（按模式复制）
 
@@ -90,8 +95,9 @@ JSON（适用于支持 `mcpServers` 的客户端）：
         "--base-url", "https://acemcp.heroman.wtf/relay/",
         "--token", "<YOUR_TOKEN>",
         "--provider", "codex",
-        "--codex-cmd", "codex",
-        "--codex-reasoning-effort", "low"
+        "--codex-api-base", "http://your-gpt-gateway/v1",
+        "--codex-api-key", "<YOUR_GPT_KEY>",
+        "--codex-model", "gpt-5.4"
       ]
     }
   }
@@ -107,8 +113,9 @@ args = [
   "--base-url", "https://acemcp.heroman.wtf/relay/",
   "--token", "<YOUR_TOKEN>",
   "--provider", "codex",
-  "--codex-cmd", "codex",
-  "--codex-reasoning-effort", "low"
+  "--codex-api-base", "http://your-gpt-gateway/v1",
+  "--codex-api-key", "<YOUR_GPT_KEY>",
+  "--codex-model", "gpt-5.4"
 ]
 ```
 
@@ -118,6 +125,7 @@ args = [
 - 请求参数里的 `provider` 仅作为提示，不用于切换模式。
 - 如果请求里的 `provider` 与启动 provider 不一致，会自动忽略，仍以启动 provider 为准。
 - 不会再自动从 `codex` 降级到 `remote`。
+- `codex` provider 当前通过 `/chat/completions` 直连 GPT API。
 
 ## 6. 在 AI CLI 中触发增强
 
@@ -148,8 +156,9 @@ $env:ACE_TOOL_ENHANCE_PROVIDER = "remote"
 
 ```powershell
 $env:ACE_TOOL_ENHANCE_PROVIDER = "codex"
-$env:ACE_TOOL_CODEX_CMD = "codex"
-$env:ACE_TOOL_CODEX_REASONING_EFFORT = "low"
+$env:ACE_TOOL_CODEX_API_BASE = "http://your-gpt-gateway/v1"
+$env:ACE_TOOL_CODEX_API_KEY = "<YOUR_GPT_KEY>"
+$env:ACE_TOOL_CODEX_MODEL = "gpt-5.4"
 ```
 
 ### 7.3 通用变量
@@ -168,7 +177,8 @@ $env:ACE_TOOL_CODEX_REASONING_EFFORT = "low"
 - `--ui-timeout-sec` / `ACE_TOOL_UI_TIMEOUT_SEC`：UI 会话超时（默认 480 秒，范围 30-3600）。
 - 超出范围的配置会回退到默认值。
 - 交互模式下 UI 超时会回退到原始 prompt；headless 模式不显示 UI，由 `ACE_TOOL_HEADLESS_ACTION` 决定动作。
-- `codex` provider 在首轮超时时会自动重试一次（`reasoning_effort=none`），用于降低“首次增强卡住”的概率。
+- `codex` provider 的 HTTP 请求会复用上述增强超时。
+- `codex` provider 会对 `429 / 502 / 503 / 504` 以及连接超时自动做最多 3 次重试。
 
 ## 9. 故障排查
 
@@ -201,19 +211,24 @@ $env:ACE_TOOL_CODEX_REASONING_EFFORT = "low"
 - 确认终端与编辑器编码为 UTF-8。
 - 打开 `ACE_TOOL_DEBUG=1`，附带日志定位具体节点。
 
-### 9.5 Codex provider 无法执行 / 退出码非 0
+### 9.5 Codex provider 调用失败 / HTTP 返回异常
 
 检查项：
-- `--codex-cmd` 是否指向可执行文件，PATH 是否包含 `codex`。
-- 使用相同命令在终端直接执行一次，确认 CLI 可运行。
-- 开启 `ACE_TOOL_DEBUG=1` 查看退出码与错误类型（timeout/auth/network 等）。
+- `--codex-api-base` / `ACE_TOOL_CODEX_API_BASE` 是否正确。
+- `--codex-api-key` / `ACE_TOOL_CODEX_API_KEY` 是否有效。
+- `--codex-model` / `ACE_TOOL_CODEX_MODEL` 是否为网关支持的模型名。
+- 开启 `ACE_TOOL_DEBUG=1` 查看错误类型（timeout/auth/network/rate_limit 等）。
 
-### 9.6 Codex 首次增强慢 / 高概率超时
+### 9.6 Codex 增强慢 / 高概率超时
 
 检查项：
-- 日志是否长时间停在 `mcp: mcp-router starting`（已默认禁用内部 mcp-router；若仍出现，确认当前进程已重启到新版本）。
-- 将 `--codex-reasoning-effort` 临时降到 `none` 或 `low` 观察改善幅度。
+- GPT 网关本身是否响应慢，或上游模型负载是否过高。
+- `--enhance-timeout-sec` 是否过低。
+- 返回是否出现 429 / 5xx，确认是否为限流或服务端波动。
 - 适当提高 `--enhance-timeout-sec`（例如 240）验证是否为纯耗时问题。
+
+补充：
+- 当前版本遇到 `429 / 502 / 503 / 504` 或连接超时会自动重试；若仍失败，通常说明上游服务确实不稳定，而不是本地参数拼错。
 
 ## 10. 从源码构建
 

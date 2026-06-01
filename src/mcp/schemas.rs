@@ -51,10 +51,6 @@ fn enhance_prompt_tool() -> Value {
             "type": "string",
             "enum": ["remote", "codex"],
             "description": "Optional provider hint. Runtime always uses startup provider; mismatched value is ignored. Startup provider priority: CLI/ENV config > default remote."
-          },
-          "codex_cmd": {
-            "type": "string",
-            "description": "Optional Codex command override. Useful on Windows when the MCP host cannot inherit the same PATH as your terminal. Priority: args.codex_cmd > CLI/ENV config > default codex."
           }
         },
         "required": ["prompt", "conversation_history"]

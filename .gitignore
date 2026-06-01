@@ -1,3 +1,4 @@
 .ace-tool/
 target/
 ace-tool-win*.tgz
+mermaid/

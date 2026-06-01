@@ -15,8 +15,9 @@ pub struct Config {
     pub exclude_patterns: Vec<String>,
     pub enable_log: bool,
     pub enhance_provider: String,
-    pub codex_cmd: String,
-    pub codex_reasoning_effort: String,
+    pub codex_api_base: String,
+    pub codex_api_key: String,
+    pub codex_model: String,
     pub enhance_timeout_sec: u64,
     pub enhance_timeout_explicit: bool,
     pub ui_timeout_sec: u64,
@@ -30,8 +31,9 @@ struct ParsedArgs {
     token: Option<String>,
     enable_log: bool,
     enhance_provider: Option<String>,
-    codex_cmd: Option<String>,
-    codex_reasoning_effort: Option<String>,
+    codex_api_base: Option<String>,
+    codex_api_key: Option<String>,
+    codex_model: Option<String>,
     enhance_timeout_sec: Option<u64>,
     ui_timeout_sec: Option<u64>,
 }
@@ -43,6 +45,7 @@ struct ParsedArgs {
 /// - `Err(String)`：缺失参数或无法规范化
 pub fn init_config() -> Result<Config, String> {
     let args = parse_args();
+
     let base_url = args
         .base_url
         .ok_or_else(|| "Missing required argument: --base-url".to_string())?;
@@ -70,18 +73,32 @@ pub fn init_config() -> Result<Config, String> {
             provider_name
         )
     })?;
-    let codex_cmd = resolve_string(args.codex_cmd, "ACE_TOOL_CODEX_CMD", "codex");
-    let codex_reasoning_effort = resolve_string(
-        args.codex_reasoning_effort,
-        "ACE_TOOL_CODEX_REASONING_EFFORT",
-        "low",
-    );
+
+    let codex_api_base = resolve_optional_string(args.codex_api_base, "ACE_TOOL_CODEX_API_BASE")
+        .map(|value| normalize_external_base_url(&value));
+    let codex_api_key = resolve_optional_string(args.codex_api_key, "ACE_TOOL_CODEX_API_KEY");
+    let codex_model = resolve_string(args.codex_model, "ACE_TOOL_CODEX_MODEL", "gpt-5.4");
     let enhance_timeout_override = resolve_u64_override(
         args.enhance_timeout_sec,
         "ACE_TOOL_ENHANCE_TIMEOUT_SEC",
         10,
         600,
     );
+
+    if provider_kind == EnhanceProviderKind::Codex {
+        if codex_api_base.is_none() {
+            return Err(
+                "Missing required argument for provider codex: --codex-api-base or ACE_TOOL_CODEX_API_BASE"
+                    .to_string(),
+            );
+        }
+        if codex_api_key.is_none() {
+            return Err(
+                "Missing required argument for provider codex: --codex-api-key or ACE_TOOL_CODEX_API_KEY"
+                    .to_string(),
+            );
+        }
+    }
 
     Ok(Config {
         base_url,
@@ -92,8 +109,9 @@ pub fn init_config() -> Result<Config, String> {
         exclude_patterns: default_exclude_patterns(),
         enable_log: args.enable_log,
         enhance_provider: provider_kind.as_str().to_string(),
-        codex_cmd,
-        codex_reasoning_effort,
+        codex_api_base: codex_api_base.unwrap_or_default(),
+        codex_api_key: codex_api_key.unwrap_or_default(),
+        codex_model,
         enhance_timeout_sec: enhance_timeout_override.unwrap_or(90),
         enhance_timeout_explicit: enhance_timeout_override.is_some(),
         ui_timeout_sec: resolve_u64(
@@ -113,8 +131,9 @@ fn parse_args() -> ParsedArgs {
         token: None,
         enable_log: false,
         enhance_provider: None,
-        codex_cmd: None,
-        codex_reasoning_effort: None,
+        codex_api_base: None,
+        codex_api_key: None,
+        codex_model: None,
         enhance_timeout_sec: None,
         ui_timeout_sec: None,
     };
@@ -140,14 +159,19 @@ fn parse_args() -> ParsedArgs {
                     result.enhance_provider = Some(value);
                 }
             }
-            "--codex-cmd" => {
+            "--codex-api-base" => {
                 if let Some(value) = iter.next() {
-                    result.codex_cmd = Some(value);
+                    result.codex_api_base = Some(value);
                 }
             }
-            "--codex-reasoning-effort" => {
+            "--codex-api-key" => {
                 if let Some(value) = iter.next() {
-                    result.codex_reasoning_effort = Some(value);
+                    result.codex_api_key = Some(value);
+                }
+            }
+            "--codex-model" => {
+                if let Some(value) = iter.next() {
+                    result.codex_model = Some(value);
                 }
             }
             "--enhance-timeout-sec" => {
@@ -165,6 +189,20 @@ fn parse_args() -> ParsedArgs {
     }
 
     result
+}
+
+fn resolve_optional_string(cli_value: Option<String>, env_key: &str) -> Option<String> {
+    if let Some(value) = cli_value {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    std::env::var(env_key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn resolve_string(cli_value: Option<String>, env_key: &str, default: &str) -> String {
@@ -199,6 +237,15 @@ fn resolve_u64_override(cli_value: Option<u64>, env_key: &str, min: u64, max: u6
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|value| *value >= min && *value <= max)
+}
+
+fn normalize_external_base_url(value: &str) -> String {
+    let trimmed = value.trim().trim_end_matches('/');
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return trimmed.to_string();
+    }
+
+    format!("https://{}", trimmed)
 }
 
 /// 规范化 base-url，补齐协议前缀。
