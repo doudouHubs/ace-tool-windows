@@ -10,6 +10,8 @@ use config::Config;
 use enhancer::codex_provider::CodexProvider;
 use enhancer::enhancer::RemoteProvider;
 use enhancer::provider::{EnhanceProvider, EnhanceProviderKind};
+use index::{LocalIndexRebuildMode, LocalRerankMode, LocalSummaryMode, SearchProviderKind};
+use index::local_search::LocalSearchProvider;
 use index::manager::IndexManager;
 use logging::{LogLevel, init_mcp_logger};
 use mcp::{McpLogger, McpServer, ToolHandler, log_debug, schemas};
@@ -105,15 +107,7 @@ fn handle_search_context(
         let _ = logging::enable_file_log(&project_root);
     }
 
-    let manager = IndexManager::new(
-        project_root,
-        config.base_url.clone(),
-        config.token.clone(),
-        config.text_extensions.clone(),
-        config.max_lines_per_blob,
-        config.exclude_patterns.clone(),
-    )
-    .map_err(|e| format!("Error: {e}"))?;
+    let search_provider_kind = resolve_search_provider_kind(config)?;
 
     let timeout_sec = std::env::var("ACE_TOOL_SEARCH_TIMEOUT_SEC")
         .ok()
@@ -121,27 +115,65 @@ fn handle_search_context(
         .filter(|v| *v >= 10 && *v <= 300)
         .unwrap_or(50);
     log_debug(format!(
-        "search_context: start root={} query_len={} timeout={}s",
+        "search_context: start root={} resolved_root={} query_len={} timeout={}s provider={}",
         project_root_path,
+        project_root.display(),
         query.chars().count(),
-        timeout_sec
+        timeout_sec,
+        search_provider_kind.as_str()
     ));
 
     let result = runtime.block_on(async {
-        timeout(
-            Duration::from_secs(timeout_sec),
-            manager.search_context(query),
-        )
+        timeout(Duration::from_secs(timeout_sec), async {
+            match search_provider_kind {
+                SearchProviderKind::Remote => {
+                    let manager = IndexManager::new(
+                        project_root.clone(),
+                        config.base_url.clone(),
+                        config.token.clone(),
+                        config.text_extensions.clone(),
+                        config.max_lines_per_blob,
+                        config.exclude_patterns.clone(),
+                    )
+                    .map_err(|e| format!("Error: {e}"))?;
+                    Ok::<String, String>(manager.search_context(query).await)
+                }
+                SearchProviderKind::Local => {
+                    let local_summary_mode = resolve_local_summary_mode(config)?;
+                    let local_rerank_mode = resolve_local_rerank_mode(config)?;
+                    let local_index_rebuild_mode = resolve_local_index_rebuild_mode(config)?;
+                    let provider = LocalSearchProvider::new(
+                        project_root.clone(),
+                        config.text_extensions.clone(),
+                        config.max_lines_per_blob,
+                        config.exclude_patterns.clone(),
+                        config.codex_api_base.clone(),
+                        config.codex_api_key.clone(),
+                        config.codex_model.clone(),
+                        local_summary_mode,
+                        local_rerank_mode,
+                        local_index_rebuild_mode,
+                        timeout_sec,
+                        config.local_rerank_pool_size,
+                        config.local_rerank_timeout_sec,
+                        config.local_rerank_model.clone(),
+                    )
+                    .map_err(|e| format!("Error: {e}"))?;
+                    provider.search_context(query).await
+                }
+            }
+        })
         .await
     });
     match result {
-        Ok(text) => {
+        Ok(Ok(text)) => {
             log_debug(format!(
                 "search_context: done elapsed={}ms",
                 started.elapsed().as_millis()
             ));
             Ok(text)
         }
+        Ok(Err(err)) => Ok(err),
         Err(_) => {
             log_debug(format!(
                 "search_context: timeout elapsed={}ms",
@@ -670,10 +702,17 @@ mod tests {
             text_extensions: HashSet::new(),
             exclude_patterns: Vec::new(),
             enable_log: false,
+            search_provider: "remote".to_string(),
             enhance_provider: provider.to_string(),
             codex_api_base: "https://example.com/v1".to_string(),
             codex_api_key: "token".to_string(),
             codex_model: "gpt-5.4".to_string(),
+            local_summary_mode: "gpt".to_string(),
+            local_index_rebuild: "auto".to_string(),
+            local_rerank_mode: "broad_only".to_string(),
+            local_rerank_pool_size: 12,
+            local_rerank_timeout_sec: 10,
+            local_rerank_model: "gpt-5.4".to_string(),
             enhance_timeout_sec: 90,
             enhance_timeout_explicit: false,
             ui_timeout_sec: 480,
@@ -834,6 +873,42 @@ fn resolve_provider_kind(
     }
 
     Ok(configured)
+}
+
+fn resolve_search_provider_kind(config: &Config) -> Result<SearchProviderKind, String> {
+    SearchProviderKind::parse(&config.search_provider).ok_or_else(|| {
+        format!(
+            "Invalid configured search provider: {} (expected remote|local)",
+            config.search_provider
+        )
+    })
+}
+
+fn resolve_local_summary_mode(config: &Config) -> Result<LocalSummaryMode, String> {
+    LocalSummaryMode::parse(&config.local_summary_mode).ok_or_else(|| {
+        format!(
+            "Invalid configured local summary mode: {} (expected gpt|local_fallback_only)",
+            config.local_summary_mode
+        )
+    })
+}
+
+fn resolve_local_rerank_mode(config: &Config) -> Result<LocalRerankMode, String> {
+    LocalRerankMode::parse(&config.local_rerank_mode).ok_or_else(|| {
+        format!(
+            "Invalid configured local rerank mode: {} (expected off|broad_only)",
+            config.local_rerank_mode
+        )
+    })
+}
+
+fn resolve_local_index_rebuild_mode(config: &Config) -> Result<LocalIndexRebuildMode, String> {
+    LocalIndexRebuildMode::parse(&config.local_index_rebuild).ok_or_else(|| {
+        format!(
+            "Invalid configured local index rebuild mode: {} (expected auto|force_full)",
+            config.local_index_rebuild
+        )
+    })
 }
 fn resolve_enhance_timeout_sec(config: &Config, provider_kind: EnhanceProviderKind) -> u64 {
     if config.enhance_timeout_explicit {

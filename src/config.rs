@@ -1,4 +1,7 @@
 use crate::enhancer::provider::EnhanceProviderKind;
+use crate::index::{
+    LocalIndexRebuildMode, LocalRerankMode, LocalSummaryMode, SearchProviderKind,
+};
 use std::collections::HashSet;
 
 /// 运行时配置，来源于 CLI 参数与内置默认值。
@@ -14,10 +17,17 @@ pub struct Config {
     pub text_extensions: HashSet<String>,
     pub exclude_patterns: Vec<String>,
     pub enable_log: bool,
+    pub search_provider: String,
     pub enhance_provider: String,
     pub codex_api_base: String,
     pub codex_api_key: String,
     pub codex_model: String,
+    pub local_summary_mode: String,
+    pub local_index_rebuild: String,
+    pub local_rerank_mode: String,
+    pub local_rerank_pool_size: usize,
+    pub local_rerank_timeout_sec: u64,
+    pub local_rerank_model: String,
     pub enhance_timeout_sec: u64,
     pub enhance_timeout_explicit: bool,
     pub ui_timeout_sec: u64,
@@ -30,10 +40,17 @@ struct ParsedArgs {
     base_url: Option<String>,
     token: Option<String>,
     enable_log: bool,
+    search_provider: Option<String>,
     enhance_provider: Option<String>,
     codex_api_base: Option<String>,
     codex_api_key: Option<String>,
     codex_model: Option<String>,
+    local_summary_mode: Option<String>,
+    local_index_rebuild: Option<String>,
+    local_rerank_mode: Option<String>,
+    local_rerank_pool_size: Option<usize>,
+    local_rerank_timeout_sec: Option<u64>,
+    local_rerank_model: Option<String>,
     enhance_timeout_sec: Option<u64>,
     ui_timeout_sec: Option<u64>,
 }
@@ -46,14 +63,39 @@ struct ParsedArgs {
 pub fn init_config() -> Result<Config, String> {
     let args = parse_args();
 
-    let base_url = args
-        .base_url
-        .ok_or_else(|| "Missing required argument: --base-url".to_string())?;
-    let token = args
-        .token
-        .ok_or_else(|| "Missing required argument: --token".to_string())?;
+    let search_provider_name =
+        resolve_string(args.search_provider, "ACE_TOOL_SEARCH_PROVIDER", "remote");
+    let search_provider_kind = SearchProviderKind::parse(&search_provider_name).ok_or_else(|| {
+        format!(
+            "Invalid search provider: {} (expected remote|local)",
+            search_provider_name
+        )
+    })?;
 
-    let mut base_url = normalize_base_url(&base_url);
+    let base_url = resolve_optional_string(args.base_url, "ACE_TOOL_BASE_URL");
+    let token = resolve_optional_string(args.token, "ACE_TOOL_TOKEN");
+
+    let provider_name =
+        resolve_string(args.enhance_provider.clone(), "ACE_TOOL_ENHANCE_PROVIDER", "remote");
+    let provider_kind = EnhanceProviderKind::parse(&provider_name).ok_or_else(|| {
+        format!(
+            "Invalid provider: {} (expected remote|codex)",
+            provider_name
+        )
+    })?;
+
+    if search_provider_kind == SearchProviderKind::Remote || provider_kind == EnhanceProviderKind::Remote {
+        if base_url.is_none() {
+            return Err("Missing required argument: --base-url".to_string());
+        }
+        if token.is_none() {
+            return Err("Missing required argument: --token".to_string());
+        }
+    }
+
+    let mut base_url = base_url.unwrap_or_else(|| "https://invalid.local".to_string());
+    let token = token.unwrap_or_default();
+    base_url = normalize_base_url(&base_url);
     if base_url.starts_with("http://") {
         let original = base_url.clone();
         // 保证走 https，避免被远端拒绝或降级为不安全连接。
@@ -65,19 +107,65 @@ pub fn init_config() -> Result<Config, String> {
     }
     base_url = base_url.trim_end_matches('/').to_string();
 
-    let provider_name =
-        resolve_string(args.enhance_provider, "ACE_TOOL_ENHANCE_PROVIDER", "remote");
-    let provider_kind = EnhanceProviderKind::parse(&provider_name).ok_or_else(|| {
-        format!(
-            "Invalid provider: {} (expected remote|codex)",
-            provider_name
-        )
-    })?;
-
     let codex_api_base = resolve_optional_string(args.codex_api_base, "ACE_TOOL_CODEX_API_BASE")
         .map(|value| normalize_external_base_url(&value));
     let codex_api_key = resolve_optional_string(args.codex_api_key, "ACE_TOOL_CODEX_API_KEY");
     let codex_model = resolve_string(args.codex_model, "ACE_TOOL_CODEX_MODEL", "gpt-5.4");
+    let local_summary_mode_name = resolve_string(
+        args.local_summary_mode,
+        "ACE_TOOL_LOCAL_SUMMARY_MODE",
+        "gpt",
+    );
+    let local_summary_mode =
+        LocalSummaryMode::parse(&local_summary_mode_name).ok_or_else(|| {
+            format!(
+                "Invalid local summary mode: {} (expected gpt|local_fallback_only)",
+                local_summary_mode_name
+            )
+        })?;
+    let local_index_rebuild_name = resolve_string(
+        args.local_index_rebuild,
+        "ACE_TOOL_LOCAL_INDEX_REBUILD",
+        "auto",
+    );
+    let local_index_rebuild =
+        LocalIndexRebuildMode::parse(&local_index_rebuild_name).ok_or_else(|| {
+            format!(
+                "Invalid local index rebuild mode: {} (expected auto|force_full)",
+                local_index_rebuild_name
+            )
+        })?;
+    let local_rerank_mode_name = resolve_string(
+        args.local_rerank_mode,
+        "ACE_TOOL_LOCAL_RERANK_MODE",
+        "broad_only",
+    );
+    let local_rerank_mode =
+        LocalRerankMode::parse(&local_rerank_mode_name).ok_or_else(|| {
+            format!(
+                "Invalid local rerank mode: {} (expected off|broad_only)",
+                local_rerank_mode_name
+            )
+        })?;
+    let local_rerank_pool_size = resolve_usize(
+        args.local_rerank_pool_size,
+        "ACE_TOOL_LOCAL_RERANK_POOL_SIZE",
+        12,
+        4,
+        32,
+    );
+    let local_rerank_timeout_sec = resolve_u64(
+        args.local_rerank_timeout_sec,
+        "ACE_TOOL_LOCAL_RERANK_TIMEOUT_SEC",
+        10,
+        3,
+        120,
+    );
+    let local_rerank_model = resolve_string(
+        args.local_rerank_model,
+        "ACE_TOOL_LOCAL_RERANK_MODEL",
+        &codex_model,
+    );
     let enhance_timeout_override = resolve_u64_override(
         args.enhance_timeout_sec,
         "ACE_TOOL_ENHANCE_TIMEOUT_SEC",
@@ -85,16 +173,20 @@ pub fn init_config() -> Result<Config, String> {
         600,
     );
 
-    if provider_kind == EnhanceProviderKind::Codex {
+    let local_search_needs_codex = search_provider_kind == SearchProviderKind::Local
+        && (local_summary_mode == LocalSummaryMode::Gpt
+            || local_rerank_mode != LocalRerankMode::Off);
+
+    if provider_kind == EnhanceProviderKind::Codex || local_search_needs_codex {
         if codex_api_base.is_none() {
             return Err(
-                "Missing required argument for provider codex: --codex-api-base or ACE_TOOL_CODEX_API_BASE"
+                "Missing required argument for codex-backed mode: --codex-api-base or ACE_TOOL_CODEX_API_BASE"
                     .to_string(),
             );
         }
         if codex_api_key.is_none() {
             return Err(
-                "Missing required argument for provider codex: --codex-api-key or ACE_TOOL_CODEX_API_KEY"
+                "Missing required argument for codex-backed mode: --codex-api-key or ACE_TOOL_CODEX_API_KEY"
                     .to_string(),
             );
         }
@@ -108,10 +200,17 @@ pub fn init_config() -> Result<Config, String> {
         text_extensions: default_text_extensions(),
         exclude_patterns: default_exclude_patterns(),
         enable_log: args.enable_log,
+        search_provider: search_provider_kind.as_str().to_string(),
         enhance_provider: provider_kind.as_str().to_string(),
         codex_api_base: codex_api_base.unwrap_or_default(),
         codex_api_key: codex_api_key.unwrap_or_default(),
         codex_model,
+        local_summary_mode: local_summary_mode.as_str().to_string(),
+        local_index_rebuild: local_index_rebuild.as_str().to_string(),
+        local_rerank_mode: local_rerank_mode.as_str().to_string(),
+        local_rerank_pool_size,
+        local_rerank_timeout_sec,
+        local_rerank_model,
         enhance_timeout_sec: enhance_timeout_override.unwrap_or(90),
         enhance_timeout_explicit: enhance_timeout_override.is_some(),
         ui_timeout_sec: resolve_u64(
@@ -130,10 +229,17 @@ fn parse_args() -> ParsedArgs {
         base_url: None,
         token: None,
         enable_log: false,
+        search_provider: None,
         enhance_provider: None,
         codex_api_base: None,
         codex_api_key: None,
         codex_model: None,
+        local_summary_mode: None,
+        local_index_rebuild: None,
+        local_rerank_mode: None,
+        local_rerank_pool_size: None,
+        local_rerank_timeout_sec: None,
+        local_rerank_model: None,
         enhance_timeout_sec: None,
         ui_timeout_sec: None,
     };
@@ -154,6 +260,11 @@ fn parse_args() -> ParsedArgs {
             "--enable-log" => {
                 result.enable_log = true;
             }
+            "--search-provider" => {
+                if let Some(value) = iter.next() {
+                    result.search_provider = Some(value);
+                }
+            }
             "--provider" => {
                 if let Some(value) = iter.next() {
                     result.enhance_provider = Some(value);
@@ -172,6 +283,36 @@ fn parse_args() -> ParsedArgs {
             "--codex-model" => {
                 if let Some(value) = iter.next() {
                     result.codex_model = Some(value);
+                }
+            }
+            "--local-summary-mode" => {
+                if let Some(value) = iter.next() {
+                    result.local_summary_mode = Some(value);
+                }
+            }
+            "--local-index-rebuild" => {
+                if let Some(value) = iter.next() {
+                    result.local_index_rebuild = Some(value);
+                }
+            }
+            "--local-rerank-mode" => {
+                if let Some(value) = iter.next() {
+                    result.local_rerank_mode = Some(value);
+                }
+            }
+            "--local-rerank-pool-size" => {
+                if let Some(value) = iter.next() {
+                    result.local_rerank_pool_size = value.trim().parse::<usize>().ok();
+                }
+            }
+            "--local-rerank-timeout-sec" => {
+                if let Some(value) = iter.next() {
+                    result.local_rerank_timeout_sec = value.trim().parse::<u64>().ok();
+                }
+            }
+            "--local-rerank-model" => {
+                if let Some(value) = iter.next() {
+                    result.local_rerank_model = Some(value);
                 }
             }
             "--enhance-timeout-sec" => {
@@ -237,6 +378,25 @@ fn resolve_u64_override(cli_value: Option<u64>, env_key: &str, min: u64, max: u6
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|value| *value >= min && *value <= max)
+}
+
+fn resolve_usize(
+    cli_value: Option<usize>,
+    env_key: &str,
+    default: usize,
+    min: usize,
+    max: usize,
+) -> usize {
+    let from_cli = cli_value.filter(|value| *value >= min && *value <= max);
+    if let Some(value) = from_cli {
+        return value;
+    }
+
+    std::env::var(env_key)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value >= min && *value <= max)
+        .unwrap_or(default)
 }
 
 fn normalize_external_base_url(value: &str) -> String {

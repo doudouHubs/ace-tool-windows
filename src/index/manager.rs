@@ -650,7 +650,7 @@ fn calculate_blob_name(path: &str, content: &str) -> String {
 }
 
 /// 清理不可见控制字符，避免服务端解析失败。
-fn sanitize_content(content: &str) -> String {
+pub(crate) fn sanitize_content(content: &str) -> String {
     content
         .chars()
         .filter(|c| {
@@ -665,7 +665,7 @@ fn sanitize_content(content: &str) -> String {
 }
 
 /// 简单二进制判定：非可见字符比例过高则视为二进制。
-fn is_binary_content(content: &str) -> bool {
+pub(crate) fn is_binary_content(content: &str) -> bool {
     let mut non_printable = 0usize;
     for ch in content.chars() {
         let code = ch as u32;
@@ -732,7 +732,7 @@ fn split_file_content(path: &str, content: &str, max_lines: usize) -> Vec<Blob> 
 }
 
 /// 判断路径是否应被忽略（gitignore + 自定义规则）。
-fn should_exclude_path(
+pub(crate) fn should_exclude_path(
     path: &Path,
     is_dir: bool,
     project_root: &Path,
@@ -767,7 +767,7 @@ fn should_exclude_path(
 }
 
 /// 统一路径分隔符为 `/`，便于跨平台比较。
-fn normalize_path(path: &Path) -> String {
+pub(crate) fn normalize_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 

@@ -261,11 +261,10 @@ unsafe extern "system" fn wnd_proc(
 
             let params = unsafe { Box::from_raw(createstruct.lpCreateParams as *mut CreateParams) };
 
-            let pinned = if pin_state_path().exists() {
-                load_pin_state()
-            } else {
-                true
-            };
+            let pinned = pin_state_path()
+                .filter(|path| path.exists())
+                .map(|_| load_pin_state())
+                .unwrap_or(true);
 
             let pin_label = if pinned { "📌" } else { "📍" };
 
@@ -1071,17 +1070,29 @@ fn set_loading(state: &WindowState, loading: bool) {
 }
 
 /// 固定窗口状态持久化路径。
-fn pin_state_path() -> std::path::PathBuf {
-    let project_root = detect_project_root();
+fn pin_state_path() -> Option<std::path::PathBuf> {
+    let project_root = match detect_project_root() {
+        Some(path) => path,
+        None => {
+            log_debug(
+                "ui: project_root unresolved; skip pin.json persistence outside project"
+                    .to_string(),
+            );
+            return None;
+        }
+    };
 
     let ace_dir = get_ace_dir(&project_root);
 
-    ace_dir.join("pin.json")
+    Some(ace_dir.join("pin.json"))
 }
 
 /// 读取固定窗口状态。
 fn load_pin_state() -> bool {
-    let path = pin_state_path();
+    let path = match pin_state_path() {
+        Some(value) => value,
+        None => return false,
+    };
 
     if !path.exists() {
         return false;
@@ -1096,7 +1107,10 @@ fn load_pin_state() -> bool {
 
 /// 保存固定窗口状态。
 fn save_pin_state(pinned: bool) {
-    let path = pin_state_path();
+    let path = match pin_state_path() {
+        Some(value) => value,
+        None => return,
+    };
 
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);

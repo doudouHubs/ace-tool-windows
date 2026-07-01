@@ -3,19 +3,20 @@ use std::path::{Path, PathBuf};
 
 /// 由当前目录向上查找项目根（优先 .ace-tool，其次 .git）。
 #[allow(dead_code)]
-pub fn detect_project_root() -> PathBuf {
+pub fn detect_project_root() -> Option<PathBuf> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let home_dir = std::env::var_os("USERPROFILE").map(PathBuf::from);
     let mut current = cwd.clone();
 
     loop {
         let ace_dir = current.join(".ace-tool");
-        if ace_dir.is_dir() {
-            return current;
+        if ace_dir.is_dir() && !is_global_home_ace_dir(&current, home_dir.as_ref()) {
+            return Some(current);
         }
 
         let git_dir = current.join(".git");
         if git_dir.exists() {
-            return current;
+            return Some(current);
         }
 
         if let Some(parent) = current.parent() {
@@ -25,7 +26,11 @@ pub fn detect_project_root() -> PathBuf {
         }
     }
 
-    cwd
+    None
+}
+
+fn is_global_home_ace_dir(current: &Path, home_dir: Option<&PathBuf>) -> bool {
+    home_dir.is_some_and(|home| current == home)
 }
 
 /// 获取 `.ace-tool` 目录路径，不存在时自动创建。

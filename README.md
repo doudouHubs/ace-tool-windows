@@ -12,7 +12,7 @@ npm i -g ace-tool-windows
 
 ## 2. 获取 Token / API Key
 
-在 <https://acemcp.heroman.wtf> 生成并复制 `token`，供 `search_context` 使用。
+在 <https://acemcp.heroman.wtf> 生成并复制 `token`，供 `remote search_context` 使用。
 
 `codex` 模式下的增强请求改为直连 GPT API，需要额外准备：
 - `codex api base`（例如 `http://your-gpt-gateway/v1`）
@@ -22,9 +22,15 @@ npm i -g ace-tool-windows
 建议：
 - 不要把 token 提交到 Git 仓库。
 - 优先通过环境变量或本地 MCP 配置注入。
-- 即便使用 `codex` provider，`search_context` 仍依赖远端服务，必须配置 `--base-url` 与 `--token`。
+- 如果使用 `search_context` 的 `remote` 模式，仍必须配置 `--base-url` 与 `--token`。
+- 如果使用 `search_context` 的 `local` 模式，需要可访问的 GPT API 网关与有效 API Key。
 
 ## 3. 模式速览（先选一个）
+
+### 3.0 `search_context` 模式
+- `remote`：沿用 ACE 远端检索服务。
+- `local`：在项目根 `.ace-tool/local-search/` 中维护增量索引、chunk 分片和查询缓存，先做本地关键词召回，再用 GPT 总结或本地结构化降级输出。
+- 默认：`remote`
 
 ### 3.1 `remote` 模式
 - 适合：不依赖本机 `codex` CLI，开箱可用。
@@ -45,9 +51,34 @@ ace-tool-win --base-url https://acemcp.heroman.wtf/relay/ --token <YOUR_TOKEN> -
 ```
 
 关键说明：
-- `search_context` 始终走远端，所以即便是 `codex` 模式也必须有可用 token。
+- `search_context` 可以单独配置 `remote/local`，与增强 provider 解耦。
 - `codex` 模式现在通过 HTTP 直连 GPT API，不再依赖本机 `codex` CLI。
 - 交互窗口支持自适应布局；增强结果仍会经过现有 UI 确认流程。
+
+### 3.3 本地检索示例
+
+```powershell
+ace-tool-win --search-provider local --provider codex --codex-api-base http://your-gpt-gateway/v1 --codex-api-key <YOUR_GPT_KEY> --codex-model gpt-5.4
+```
+
+本地检索产物会写入项目根目录：
+
+```text
+.ace-tool/local-search/
+  meta.json
+  files-manifest.json
+  chunks/
+  query-cache/
+  rerank-cache/
+```
+
+说明：
+- 本地检索默认不再依赖 `/embeddings`。
+- 当前实现采用增量索引 + 关键词 BM25 风格召回；对宽查询会额外调用 `/chat/completions` 做 GPT rerank，再走总结。
+- 若总结失败，可回退为结构化本地结果；也可显式配置为只走本地结构化结果。
+- 本地索引现在会自动检测 `manifest/chunks/meta` 是否损坏；若发现缺块、坏 JSON 或旧版本索引，会自动清理并全量自愈重建。
+- `query-cache/` 与 `rerank-cache/` 会自动做 TTL 与数量治理，避免长期运行后缓存无限膨胀。
+- `.ace-tool` 持久化按项目管理；若运行时无法识别项目根，则会拒绝写入磁盘状态，而不是回退写到 `C:\\Users\\X1\\.ace-tool`。
 
 ## 4. MCP 配置模板（按模式复制）
 
@@ -164,15 +195,32 @@ $env:ACE_TOOL_CODEX_MODEL = "gpt-5.4"
 ### 7.3 通用变量
 
 - `ACE_TOOL_ENHANCE_TIMEOUT_SEC=90`（范围 10-600；未显式配置时 `remote` 默认 90 秒，`codex` 默认 180 秒）
+- `ACE_TOOL_SEARCH_TIMEOUT_SEC=50`（范围 10-300；控制 `search_context` 整体超时）
 - `ACE_TOOL_UI_TIMEOUT_SEC=480`（范围 30-3600）
 - `ACE_TOOL_HEADLESS=1`
 - `ACE_TOOL_HEADLESS_ACTION=enhanced|end|timeout`
 - `ACE_TOOL_DEBUG=1`
 - `ACE_TOOL_DEBUG_VERBOSE=1`
 - `ACE_TOOL_DEBUG_FILE=<path>`
+- `ACE_TOOL_SEARCH_PROVIDER=remote|local`
+- `ACE_TOOL_LOCAL_SUMMARY_MODE=gpt|local_fallback_only`
+- `ACE_TOOL_LOCAL_INDEX_REBUILD=auto|force_full`
+- `ACE_TOOL_LOCAL_RERANK_MODE=off|broad_only`
+- `ACE_TOOL_LOCAL_RERANK_POOL_SIZE=12`
+- `ACE_TOOL_LOCAL_RERANK_TIMEOUT_SEC=10`
+- `ACE_TOOL_LOCAL_RERANK_MODEL=gpt-5.4-mini`
 
 ## 8. 超时规则
 
+- `ACE_TOOL_SEARCH_TIMEOUT_SEC`：`search_context` 总超时，范围 10-300 秒，默认 50 秒。
+- `ACE_TOOL_LOCAL_SUMMARY_MODE`：`local` 检索答案总结模式，默认 `gpt`；设为 `local_fallback_only` 时不再请求远端总结接口。
+- `ACE_TOOL_LOCAL_INDEX_REBUILD`：`local` 检索索引刷新策略，默认 `auto`；设为 `force_full` 时每次强制全量重建本地索引。
+- `ACE_TOOL_LOCAL_RERANK_MODE`：本地检索语义重排模式，默认 `broad_only`；仅宽查询触发 GPT rerank。
+- `ACE_TOOL_LOCAL_RERANK_POOL_SIZE`：进入 rerank 前参与重排的候选池大小，默认 `12`，范围 `4-32`。
+- `ACE_TOOL_LOCAL_RERANK_TIMEOUT_SEC`：单次 rerank 请求预算，默认 `10` 秒；仍受 `ACE_TOOL_SEARCH_TIMEOUT_SEC` 总预算约束。
+- `ACE_TOOL_LOCAL_RERANK_MODEL`：rerank 专用模型名；未配置时跟随 `ACE_TOOL_CODEX_MODEL`。
+- `local` 模式下会自动清理过期或损坏的查询缓存；默认缓存保留 7 天，并限制在最近 200 条以内。
+- `local` 模式会尽量让结果分散到不同文件，避免单个超大文件把前几条结果全占满。
 - `--enhance-timeout-sec` / `ACE_TOOL_ENHANCE_TIMEOUT_SEC`：增强请求超时，范围 10-600 秒；未显式配置时 `remote` 默认 90 秒，`codex` 默认 180 秒。
 - `--ui-timeout-sec` / `ACE_TOOL_UI_TIMEOUT_SEC`：UI 会话超时（默认 480 秒，范围 30-3600）。
 - 超出范围的配置会回退到默认值。
