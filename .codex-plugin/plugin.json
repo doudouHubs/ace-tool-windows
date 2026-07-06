@@ -1,0 +1,39 @@
+{
+  "name": "ace-tool",
+  "version": "0.3.0",
+  "description": "Windows ACE plugin for codebase search and prompt enhancement through Codex skills and scripts.",
+  "author": {
+    "name": "X1",
+    "url": "https://github.com/doudouHubs"
+  },
+  "homepage": "https://github.com/doudouHubs/ace-tool-windows#readme",
+  "repository": "https://github.com/doudouHubs/ace-tool-windows",
+  "license": "Apache-2.0",
+  "keywords": [
+    "codex",
+    "plugin",
+    "ace-tool",
+    "code-search",
+    "prompt-enhancement",
+    "windows"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "ACE Tool",
+    "shortDescription": "Search codebases and enhance prompts with ACE workflows.",
+    "longDescription": "ACE Tool packages Windows-first codebase retrieval and prompt enhancement as Codex skills backed by local scripts and the ace-tool-win executable, without requiring MCP server registration.",
+    "developerName": "X1",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write",
+      "Productivity"
+    ],
+    "defaultPrompt": [
+      "Search this codebase with ACE Tool.",
+      "Enhance this request with ACE Tool.",
+      "Find relevant project context before editing."
+    ],
+    "brandColor": "#0F766E"
+  }
+}

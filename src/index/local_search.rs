@@ -2,7 +2,7 @@ use crate::index::{LocalIndexRebuildMode, LocalRerankMode, LocalSummaryMode};
 use crate::index::manager::{
     is_binary_content, normalize_path, sanitize_content, should_exclude_path,
 };
-use crate::mcp::{log_debug, log_debug_verbose};
+use crate::logging::{log_debug, log_debug_verbose};
 use crate::utils::encoding::read_file_with_encoding;
 use crate::utils::ignore::load_gitignore;
 use reqwest::Client;

@@ -1,7 +1,7 @@
 {
   "name": "ace-tool-windows",
-  "version": "0.2.8",
-  "description": "ACE MCP server for Windows (Win32)",
+  "version": "0.3.0",
+  "description": "ACE Codex plugin backend and CLI for Windows (Win32)",
   "bin": {
     "ace-tool-win": "bin/ace-tool-win.exe"
   },
@@ -13,6 +13,10 @@
   ],
   "files": [
     "bin/ace-tool-win.exe",
+    ".codex-plugin/plugin.json",
+    "skills/",
+    "scripts/ace-search.ps1",
+    "scripts/ace-enhance.ps1",
     "README.md",
     "LICENSE"
   ],
@@ -32,8 +36,11 @@
   },
   "homepage": "https://github.com/doudouHubs/ace-tool-windows#readme",
   "keywords": [
-    "mcp",
+    "codex",
+    "plugin",
     "ace-tool",
+    "code-search",
+    "prompt-enhancement",
     "win32",
     "windows"
   ]

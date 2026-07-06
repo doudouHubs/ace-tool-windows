@@ -1,5 +1,5 @@
 use crate::enhancer::provider::{EnhanceProvider, EnhanceProviderKind};
-use crate::mcp::log_debug;
+use crate::logging::log_debug;
 use futures::future::BoxFuture;
 use reqwest::Client;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};

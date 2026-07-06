@@ -1,4 +1,4 @@
-use crate::mcp::log_debug;
+use crate::logging::log_debug;
 
 use crate::ui::session::{ContinueCallback, SessionAction};
 

@@ -6,7 +6,8 @@ use std::collections::HashSet;
 
 /// 运行时配置，来源于 CLI 参数与内置默认值。
 ///
-/// 这些字段会在 MCP 工具调用时复用，避免重复解析参数。
+/// 插件化后每次 CLI 只执行一个能力，因此远端必填项不在这里做全局强校验；
+/// 具体能力会在真正需要 remote provider 时 fail-fast。
 #[derive(Clone, Debug)]
 pub struct Config {
     pub base_url: String,
@@ -84,18 +85,11 @@ pub fn init_config() -> Result<Config, String> {
         )
     })?;
 
-    if search_provider_kind == SearchProviderKind::Remote || provider_kind == EnhanceProviderKind::Remote {
-        if base_url.is_none() {
-            return Err("Missing required argument: --base-url".to_string());
-        }
-        if token.is_none() {
-            return Err("Missing required argument: --token".to_string());
-        }
-    }
-
-    let mut base_url = base_url.unwrap_or_else(|| "https://invalid.local".to_string());
+    let mut base_url = base_url.unwrap_or_default();
     let token = token.unwrap_or_default();
-    base_url = normalize_base_url(&base_url);
+    if !base_url.trim().is_empty() {
+        base_url = normalize_base_url(&base_url);
+    }
     if base_url.starts_with("http://") {
         let original = base_url.clone();
         // 保证走 https，避免被远端拒绝或降级为不安全连接。
@@ -172,25 +166,6 @@ pub fn init_config() -> Result<Config, String> {
         10,
         600,
     );
-
-    let local_search_needs_codex = search_provider_kind == SearchProviderKind::Local
-        && (local_summary_mode == LocalSummaryMode::Gpt
-            || local_rerank_mode != LocalRerankMode::Off);
-
-    if provider_kind == EnhanceProviderKind::Codex || local_search_needs_codex {
-        if codex_api_base.is_none() {
-            return Err(
-                "Missing required argument for codex-backed mode: --codex-api-base or ACE_TOOL_CODEX_API_BASE"
-                    .to_string(),
-            );
-        }
-        if codex_api_key.is_none() {
-            return Err(
-                "Missing required argument for codex-backed mode: --codex-api-key or ACE_TOOL_CODEX_API_KEY"
-                    .to_string(),
-            );
-        }
-    }
 
     Ok(Config {
         base_url,

@@ -2,7 +2,6 @@ mod config;
 mod enhancer;
 mod index;
 mod logging;
-mod mcp;
 mod ui;
 mod utils;
 
@@ -13,10 +12,10 @@ use enhancer::provider::{EnhanceProvider, EnhanceProviderKind};
 use index::{LocalIndexRebuildMode, LocalRerankMode, LocalSummaryMode, SearchProviderKind};
 use index::local_search::LocalSearchProvider;
 use index::manager::IndexManager;
-use logging::{LogLevel, init_mcp_logger};
-use mcp::{McpLogger, McpServer, ToolHandler, log_debug, schemas};
+use logging::log_debug;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::env;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -25,8 +24,24 @@ use tokio::runtime::Runtime;
 use tokio::time::timeout;
 use ui::session::{ContinueCallback, SessionAction, is_headless_mode, run_prompt_session};
 
-/// 程序入口：初始化配置、工具列表与 MCP 服务端。
+/// 程序入口：解析插件脚本调用的 CLI 子命令并执行对应能力。
+///
+/// 插件化后，Codex 通过 skill -> PowerShell script -> CLI 子命令调用本程序；
+/// 不再启动 MCP stdio server，避免保留两套入口导致行为漂移。
 fn main() -> std::io::Result<()> {
+    let command = match parse_command(env::args().skip(1)) {
+        Ok(Some(command)) => command,
+        Ok(None) => {
+            print_usage();
+            return Ok(());
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            print_usage();
+            std::process::exit(2);
+        }
+    };
+
     let config = match config::init_config() {
         Ok(cfg) => cfg,
         Err(err) => {
@@ -35,35 +50,182 @@ fn main() -> std::io::Result<()> {
         }
     };
 
-    let tools = schemas::tool_list();
     let runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
     let config = Arc::new(config);
 
-    let handler: ToolHandler = Arc::new({
-        let runtime = runtime.clone();
-        let config = config.clone();
-        move |name, args| handle_tool_call(name, args, &config, &runtime)
-    });
+    let output = match command {
+        Command::Search {
+            project_root_path,
+            query,
+            format,
+        } => {
+            let result = handle_search_context(
+                Some(serde_json::json!({
+                    "project_root_path": project_root_path,
+                    "query": query,
+                })),
+                &config,
+                &runtime,
+            );
+            render_cli_result("search", result, format)
+        }
+        Command::Enhance {
+            project_root_path,
+            prompt,
+            conversation_history,
+            format,
+        } => {
+            let result = handle_enhance_prompt(
+                Some(serde_json::json!({
+                    "project_root_path": project_root_path,
+                    "prompt": prompt,
+                    "conversation_history": conversation_history,
+                })),
+                &config,
+                &runtime,
+            );
+            render_cli_result("enhance", result, format)
+        }
+    };
 
-    let server = McpServer::new(tools, handler);
-    let logger = server.logger();
-    init_mcp_logger(build_mcp_sender(logger));
-
-    server.run()
+    match output {
+        Ok(text) => {
+            println!("{text}");
+            Ok(())
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    }
 }
 
-/// MCP 工具分发器，根据工具名路由到具体处理函数。
-fn handle_tool_call(
-    name: &str,
-    args: Option<serde_json::Value>,
-    config: &Arc<Config>,
-    runtime: &Arc<Runtime>,
-) -> Result<String, String> {
-    match name {
-        "search_context" => handle_search_context(args, config, runtime),
-        "enhance_prompt" => handle_enhance_prompt(args, config, runtime),
-        _ => Err(format!("Unknown tool: {name}")),
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutputFormat {
+    Text,
+    Json,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Command {
+    Search {
+        project_root_path: String,
+        query: String,
+        format: OutputFormat,
+    },
+    Enhance {
+        project_root_path: String,
+        prompt: String,
+        conversation_history: String,
+        format: OutputFormat,
+    },
+}
+
+/// 解析插件脚本传入的业务子命令。
+///
+/// 配置类参数仍由 `config::init_config` 统一读取；这里仅解析当前能力所需的
+/// 调用参数，避免配置 owner 分裂。
+fn parse_command<I>(args: I) -> Result<Option<Command>, String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut iter = args.into_iter();
+    let Some(command) = iter.next() else {
+        return Ok(None);
+    };
+
+    if command == "--help" || command == "-h" {
+        return Ok(None);
     }
+
+    let mut project_root_path: Option<String> = None;
+    let mut query: Option<String> = None;
+    let mut prompt: Option<String> = None;
+    let mut conversation_history = String::new();
+    let mut format = OutputFormat::Text;
+
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--project-root" | "--project-root-path" => {
+                project_root_path = iter.next();
+            }
+            "--query" => {
+                query = iter.next();
+            }
+            "--prompt" => {
+                prompt = iter.next();
+            }
+            "--conversation-history" | "--history" => {
+                conversation_history = iter.next().unwrap_or_default();
+            }
+            "--format" => {
+                let value = iter.next().unwrap_or_default();
+                format = match value.as_str() {
+                    "text" | "markdown" => OutputFormat::Text,
+                    "json" => OutputFormat::Json,
+                    _ => {
+                        return Err(format!(
+                            "Invalid --format value: {value} (expected text|markdown|json)"
+                        ));
+                    }
+                };
+            }
+            _ if arg.starts_with("--") => {
+                // 配置类参数交给 config::init_config 解析；这里跳过它们的值。
+                // 这样 skill 脚本可透传 --provider / --codex-api-base 等老配置参数。
+                if expects_value(&arg) {
+                    let _ = iter.next();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let project_root_path = project_root_path
+        .ok_or_else(|| "Missing required argument: --project-root".to_string())?;
+
+    match command.as_str() {
+        "search" => Ok(Some(Command::Search {
+            project_root_path,
+            query: query.ok_or_else(|| "Missing required argument: --query".to_string())?,
+            format,
+        })),
+        "enhance" => Ok(Some(Command::Enhance {
+            project_root_path,
+            prompt: prompt.ok_or_else(|| "Missing required argument: --prompt".to_string())?,
+            conversation_history,
+            format,
+        })),
+        _ => Err(format!("Unknown command: {command}")),
+    }
+}
+
+fn expects_value(arg: &str) -> bool {
+    !matches!(arg, "--enable-log")
+}
+
+fn render_cli_result(
+    operation: &str,
+    result: Result<String, String>,
+    format: OutputFormat,
+) -> Result<String, String> {
+    let text = result?;
+    if format == OutputFormat::Text {
+        return Ok(text);
+    }
+
+    Ok(serde_json::json!({
+        "operation": operation,
+        "ok": true,
+        "result": text,
+    })
+    .to_string())
+}
+
+fn print_usage() {
+    eprintln!(
+        "Usage:\n  ace-tool-win search --project-root <path> --query <text> [--format text|json]\n  ace-tool-win enhance --project-root <path> --prompt <text> [--conversation-history <text>] [--format text|json]"
+    );
 }
 
 /// `search_context` 的处理入口。
@@ -127,6 +289,7 @@ fn handle_search_context(
         timeout(Duration::from_secs(timeout_sec), async {
             match search_provider_kind {
                 SearchProviderKind::Remote => {
+                    require_remote_credentials(config)?;
                     let manager = IndexManager::new(
                         project_root.clone(),
                         config.base_url.clone(),
@@ -141,6 +304,11 @@ fn handle_search_context(
                 SearchProviderKind::Local => {
                     let local_summary_mode = resolve_local_summary_mode(config)?;
                     let local_rerank_mode = resolve_local_rerank_mode(config)?;
+                    if local_summary_mode == LocalSummaryMode::Gpt
+                        || local_rerank_mode != LocalRerankMode::Off
+                    {
+                        require_codex_credentials(config)?;
+                    }
                     let local_index_rebuild_mode = resolve_local_index_rebuild_mode(config)?;
                     let provider = LocalSearchProvider::new(
                         project_root.clone(),
@@ -249,6 +417,7 @@ fn handle_enhance_prompt(
 
     let provider: Arc<dyn EnhanceProvider> = match provider_kind {
         EnhanceProviderKind::Remote => {
+            require_remote_credentials(config)?;
             log_debug("enhance_prompt: building index manager".to_string());
             let manager = IndexManager::new(
                 project_root_path,
@@ -266,6 +435,7 @@ fn handle_enhance_prompt(
             )
         }
         EnhanceProviderKind::Codex => {
+            require_codex_credentials(config)?;
             log_debug(format!(
                 "enhance_prompt: create codex provider api_base={} model={} timeout={}s",
                 config.codex_api_base, config.codex_model, enhance_timeout_sec
@@ -687,8 +857,9 @@ fn store_recent_enhance_result(cache_key: u64, result: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Config, EnhanceProviderKind, derive_prompt_from_history, prepare_continue_inputs,
-        resolve_effective_prompt, resolve_provider_kind, strip_enhance_markers,
+        Command, Config, EnhanceProviderKind, OutputFormat, derive_prompt_from_history,
+        parse_command, prepare_continue_inputs, resolve_effective_prompt, resolve_provider_kind,
+        strip_enhance_markers,
     };
     use serde_json::json;
     use std::collections::HashSet;
@@ -717,6 +888,57 @@ mod tests {
             enhance_timeout_explicit: false,
             ui_timeout_sec: 480,
         }
+    }
+
+    #[test]
+    fn parse_search_command_accepts_plugin_script_arguments() {
+        let command = parse_command([
+            "search".to_string(),
+            "--project-root".to_string(),
+            "F:\\project".to_string(),
+            "--query".to_string(),
+            "Where is auth?".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+            "--search-provider".to_string(),
+            "local".to_string(),
+        ])
+        .expect("command should parse")
+        .expect("command should exist");
+
+        assert_eq!(
+            command,
+            Command::Search {
+                project_root_path: "F:\\project".to_string(),
+                query: "Where is auth?".to_string(),
+                format: OutputFormat::Json,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_enhance_command_accepts_history() {
+        let command = parse_command([
+            "enhance".to_string(),
+            "--project-root".to_string(),
+            "F:\\project".to_string(),
+            "--prompt".to_string(),
+            "Refactor this -enhance".to_string(),
+            "--conversation-history".to_string(),
+            "User: refactor".to_string(),
+        ])
+        .expect("command should parse")
+        .expect("command should exist");
+
+        assert_eq!(
+            command,
+            Command::Enhance {
+                project_root_path: "F:\\project".to_string(),
+                prompt: "Refactor this -enhance".to_string(),
+                conversation_history: "User: refactor".to_string(),
+                format: OutputFormat::Text,
+            }
+        );
     }
 
     #[test]
@@ -910,6 +1132,35 @@ fn resolve_local_index_rebuild_mode(config: &Config) -> Result<LocalIndexRebuild
         )
     })
 }
+
+fn require_remote_credentials(config: &Config) -> Result<(), String> {
+    if config.base_url.trim().is_empty() {
+        return Err(
+            "Missing required remote config: --base-url or ACE_TOOL_BASE_URL".to_string(),
+        );
+    }
+    if config.token.trim().is_empty() {
+        return Err("Missing required remote config: --token or ACE_TOOL_TOKEN".to_string());
+    }
+    Ok(())
+}
+
+fn require_codex_credentials(config: &Config) -> Result<(), String> {
+    if config.codex_api_base.trim().is_empty() {
+        return Err(
+            "Missing required codex-backed config: --codex-api-base or ACE_TOOL_CODEX_API_BASE"
+                .to_string(),
+        );
+    }
+    if config.codex_api_key.trim().is_empty() {
+        return Err(
+            "Missing required codex-backed config: --codex-api-key or ACE_TOOL_CODEX_API_KEY"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn resolve_enhance_timeout_sec(config: &Config, provider_kind: EnhanceProviderKind) -> u64 {
     if config.enhance_timeout_explicit {
         return config.enhance_timeout_sec;
@@ -936,17 +1187,4 @@ fn classify_enhance_error(err: &str) -> &'static str {
     } else {
         "unknown"
     }
-}
-
-/// 构造 MCP logging 通道的发送闭包。
-fn build_mcp_sender(logger: McpLogger) -> logging::McpLogSender {
-    Arc::new(move |level, message| {
-        let level_str = match level {
-            LogLevel::Debug => "debug",
-            LogLevel::Info => "info",
-            LogLevel::Warning => "warning",
-            LogLevel::Error => "error",
-        };
-        logger.send(level_str, message);
-    })
 }
