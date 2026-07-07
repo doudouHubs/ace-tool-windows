@@ -14,6 +14,7 @@ const RETRYABLE_STATUS_CODES: [u16; 4] = [429, 502, 503, 504];
 pub struct CodexProvider {
     api_base: String,
     model: String,
+    reasoning_effort: String,
     timeout: Duration,
     client: Client,
 }
@@ -23,6 +24,7 @@ impl CodexProvider {
         api_base: String,
         api_key: String,
         model: String,
+        reasoning_effort: String,
         timeout_sec: u64,
     ) -> Result<Self, String> {
         let api_base = api_base.trim().trim_end_matches('/').to_string();
@@ -38,6 +40,14 @@ impl CodexProvider {
         let model = model.trim().to_string();
         if model.is_empty() {
             return Err("Codex model is required.".to_string());
+        }
+
+        let reasoning_effort = reasoning_effort.trim().to_ascii_lowercase();
+        if !matches!(reasoning_effort.as_str(), "low" | "medium" | "high") {
+            return Err(format!(
+                "Invalid Codex reasoning effort: {} (expected low|medium|high)",
+                reasoning_effort
+            ));
         }
 
         let mut headers = HeaderMap::new();
@@ -58,6 +68,7 @@ impl CodexProvider {
         Ok(Self {
             api_base,
             model,
+            reasoning_effort,
             timeout,
             client,
         })
@@ -65,7 +76,12 @@ impl CodexProvider {
 
     async fn enhance_once(&self, prompt: &str, history: &str) -> Result<String, String> {
         let (system_prompt, user_prompt) = build_codex_messages(prompt, history);
-        let payload = build_chat_completion_payload(&self.model, &system_prompt, &user_prompt);
+        let payload = build_chat_completion_payload(
+            &self.model,
+            &self.reasoning_effort,
+            &system_prompt,
+            &user_prompt,
+        );
         let url = format!("{}/chat/completions", self.api_base);
 
         let mut last_error = String::new();
@@ -223,7 +239,12 @@ fn build_codex_messages(prompt: &str, history: &str) -> (String, String) {
     (system_prompt.to_string(), user_prompt)
 }
 
-fn build_chat_completion_payload(model: &str, system_prompt: &str, user_prompt: &str) -> Value {
+fn build_chat_completion_payload(
+    model: &str,
+    reasoning_effort: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+) -> Value {
     json!({
         "model": model,
         "messages": [
@@ -236,7 +257,8 @@ fn build_chat_completion_payload(model: &str, system_prompt: &str, user_prompt: 
                 "content": user_prompt
             }
         ],
-        "temperature": 0.1
+        "temperature": 0.1,
+        "reasoning_effort": reasoning_effort
     })
 }
 
@@ -516,10 +538,14 @@ mod tests {
 
     #[test]
     fn build_payload_uses_model_and_messages() {
-        let payload = build_chat_completion_payload("gpt-5.4", "system", "user");
+        let payload = build_chat_completion_payload("gpt-5.4", "low", "system", "user");
         assert_eq!(
             payload.get("model").and_then(|v| v.as_str()),
             Some("gpt-5.4")
+        );
+        assert_eq!(
+            payload.get("reasoning_effort").and_then(|v| v.as_str()),
+            Some("low")
         );
         let messages = payload
             .get("messages")

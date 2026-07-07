@@ -1,7 +1,7 @@
-use crate::index::{LocalIndexRebuildMode, LocalRerankMode, LocalSummaryMode};
 use crate::index::manager::{
     is_binary_content, normalize_path, sanitize_content, should_exclude_path,
 };
+use crate::index::{LocalIndexRebuildMode, LocalRerankMode, LocalSummaryMode};
 use crate::logging::{log_debug, log_debug_verbose};
 use crate::utils::encoding::read_file_with_encoding;
 use crate::utils::ignore::load_gitignore;
@@ -61,6 +61,7 @@ pub struct LocalSearchProvider {
     max_lines_per_blob: usize,
     codex_api_base: String,
     codex_model: String,
+    codex_reasoning_effort: String,
     rerank_model: String,
     summary_mode: LocalSummaryMode,
     rerank_mode: LocalRerankMode,
@@ -271,6 +272,7 @@ impl LocalSearchProvider {
         codex_api_base: String,
         codex_api_key: String,
         codex_model: String,
+        codex_reasoning_effort: String,
         summary_mode: LocalSummaryMode,
         rerank_mode: LocalRerankMode,
         index_rebuild_mode: LocalIndexRebuildMode,
@@ -290,8 +292,7 @@ impl LocalSearchProvider {
             }
             if codex_api_key.trim().is_empty() {
                 return Err(
-                    "Local search requires --codex-api-key or ACE_TOOL_CODEX_API_KEY."
-                        .to_string(),
+                    "Local search requires --codex-api-key or ACE_TOOL_CODEX_API_KEY.".to_string(),
                 );
             }
 
@@ -341,6 +342,7 @@ impl LocalSearchProvider {
             max_lines_per_blob,
             codex_api_base: codex_api_base.trim_end_matches('/').to_string(),
             codex_model,
+            codex_reasoning_effort,
             rerank_model,
             summary_mode,
             rerank_mode,
@@ -402,7 +404,8 @@ impl LocalSearchProvider {
             chunks,
             self.rerank_pool_size.max(DEFAULT_TOP_K) * RANK_CANDIDATE_POOL_MULTIPLIER,
         );
-        let mut candidates = merge_adjacent_candidates(ranked, self.rerank_pool_size.max(DEFAULT_TOP_K));
+        let mut candidates =
+            merge_adjacent_candidates(ranked, self.rerank_pool_size.max(DEFAULT_TOP_K));
         log_debug(format!(
             "search_context: local rank_done candidate_count={} elapsed={}ms",
             candidates.len(),
@@ -415,8 +418,11 @@ impl LocalSearchProvider {
         if self.should_use_rerank(&prepared_query, &candidates) {
             let rerank_started = Instant::now();
             let rerank_candidate_signature = build_candidate_signature(&candidates);
-            let rerank_timeout =
-                compute_local_rerank_timeout(self.search_timeout_sec, search_started.elapsed(), self.rerank_timeout_sec);
+            let rerank_timeout = compute_local_rerank_timeout(
+                self.search_timeout_sec,
+                search_started.elapsed(),
+                self.rerank_timeout_sec,
+            );
             if let Some(rerank_timeout) = rerank_timeout {
                 log_debug(format!(
                     "search_context: local rerank_start mode={} candidate_signature={} timeout_ms={} candidate_count={}",
@@ -481,13 +487,13 @@ impl LocalSearchProvider {
         let result = match self.summary_mode {
             LocalSummaryMode::Gpt => {
                 let summary_started = Instant::now();
-                let summary_timeout =
-                    compute_local_summary_timeout(self.search_timeout_sec, search_started.elapsed());
+                let summary_timeout = compute_local_summary_timeout(
+                    self.search_timeout_sec,
+                    search_started.elapsed(),
+                );
                 let Some(summary_timeout) = summary_timeout else {
-                    let remaining_ms = remaining_budget_ms(
-                        self.search_timeout_sec,
-                        search_started.elapsed(),
-                    );
+                    let remaining_ms =
+                        remaining_budget_ms(self.search_timeout_sec, search_started.elapsed());
                     log_debug(format!(
                         "search_context: local summary skipped reason=insufficient_budget remaining_ms={}",
                         remaining_ms
@@ -656,9 +662,7 @@ impl LocalSearchProvider {
                     "search_context: local storage_recover_detected reason=manifest_unreadable error={}",
                     err
                 ));
-                return Ok(StorageHealthStatus::requires_rebuild(
-                    "manifest_unreadable",
-                ));
+                return Ok(StorageHealthStatus::requires_rebuild("manifest_unreadable"));
             }
         };
         if manifest.version != INDEX_VERSION {
@@ -882,7 +886,11 @@ impl LocalSearchProvider {
             self.cleanup_orphan_chunk_files(&referenced_chunk_files)?;
 
         let index_mode = if force_full { "full" } else { "incremental" };
-        let chunk_count = manifest.files.iter().map(|entry| entry.chunk_count).sum::<usize>();
+        let chunk_count = manifest
+            .files
+            .iter()
+            .map(|entry| entry.chunk_count)
+            .sum::<usize>();
         let index_signature = build_index_signature(&manifest.files);
         let query_cache_entries = self.count_query_cache_entries()?;
         let meta = LocalIndexMeta {
@@ -926,10 +934,7 @@ impl LocalSearchProvider {
             && self.chunk_file_path(&entry.chunk_file).exists()
     }
 
-    fn index_file(
-        &self,
-        file: &DiscoveredFile,
-    ) -> Result<Option<LocalFileManifestEntry>, String> {
+    fn index_file(&self, file: &DiscoveredFile) -> Result<Option<LocalFileManifestEntry>, String> {
         let content = match read_file_with_encoding(&file.absolute_path) {
             Ok(data) => data,
             Err(err) => {
@@ -1015,12 +1020,16 @@ impl LocalSearchProvider {
         candidates: &[QueryCandidate],
         request_timeout: Duration,
     ) -> Result<String, String> {
-        let client = self
-            .client
-            .as_ref()
-            .ok_or_else(|| "summary client is unavailable in current local summary mode".to_string())?;
+        let client = self.client.as_ref().ok_or_else(|| {
+            "summary client is unavailable in current local summary mode".to_string()
+        })?;
         let context = render_context_for_summary(candidates);
-        let payload = build_local_summary_payload(&self.codex_model, query, &context);
+        let payload = build_local_summary_payload(
+            &self.codex_model,
+            &self.codex_reasoning_effort,
+            query,
+            &context,
+        );
         let payload_text = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
         log_debug(format!(
             "search_context: local summary_request model={} query_len={} context_chars={} payload_bytes={} timeout_ms={}",
@@ -1077,7 +1086,11 @@ impl LocalSearchProvider {
         parse_chat_completion_text(&response_text)
     }
 
-    fn should_use_rerank(&self, prepared_query: &PreparedQuery, candidates: &[QueryCandidate]) -> bool {
+    fn should_use_rerank(
+        &self,
+        prepared_query: &PreparedQuery,
+        candidates: &[QueryCandidate],
+    ) -> bool {
         self.rerank_mode == LocalRerankMode::BroadOnly
             && prepared_query.broad_intent
             && candidates.len() >= MIN_RERANK_CANDIDATES
@@ -1090,13 +1103,16 @@ impl LocalSearchProvider {
         candidate_signature: &str,
         request_timeout: Duration,
     ) -> Result<Vec<QueryCandidate>, String> {
-        let client = self
-            .client
-            .as_ref()
-            .ok_or_else(|| "rerank client is unavailable in current local rerank mode".to_string())?;
+        let client = self.client.as_ref().ok_or_else(|| {
+            "rerank client is unavailable in current local rerank mode".to_string()
+        })?;
 
-        let cache_key =
-            build_rerank_cache_key(query, candidate_signature, self.rerank_mode.as_str(), &self.rerank_model);
+        let cache_key = build_rerank_cache_key(
+            query,
+            candidate_signature,
+            self.rerank_mode.as_str(),
+            &self.rerank_model,
+        );
         if let Some(cached_ids) = self.load_cached_rerank_result(
             &cache_key,
             query,
@@ -1399,12 +1415,8 @@ impl LocalSearchProvider {
             }
         }
 
-        valid_entries.sort_by(|left, right| {
-            right
-                .1
-                .cmp(&left.1)
-                .then_with(|| left.0.cmp(&right.0))
-        });
+        valid_entries
+            .sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
         if valid_entries.len() > QUERY_CACHE_MAX_ENTRIES {
             for (path, _) in valid_entries.iter().skip(QUERY_CACHE_MAX_ENTRIES) {
                 remove_file_if_exists(path)?;
@@ -1454,12 +1466,8 @@ impl LocalSearchProvider {
             }
         }
 
-        valid_entries.sort_by(|left, right| {
-            right
-                .1
-                .cmp(&left.1)
-                .then_with(|| left.0.cmp(&right.0))
-        });
+        valid_entries
+            .sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
         if valid_entries.len() > RERANK_CACHE_MAX_ENTRIES {
             for (path, _) in valid_entries.iter().skip(RERANK_CACHE_MAX_ENTRIES) {
                 remove_file_if_exists(path)?;
@@ -1624,7 +1632,10 @@ fn split_content_into_local_chunks(
     }
 
     if chunks.is_empty() {
-        log_debug(format!("search_context: local skip empty chunk path={}", path));
+        log_debug(format!(
+            "search_context: local skip empty chunk path={}",
+            path
+        ));
     }
     chunks
 }
@@ -1732,7 +1743,11 @@ fn compute_query_match(
     let doc_len = chunk.token_count.max(1) as f32;
     let normalized_path = normalize_search_text(&chunk.path);
     let normalized_file = normalize_search_text(&chunk.file_name);
-    let symbol_set: HashSet<&str> = chunk.symbol_tokens.iter().map(|value| value.as_str()).collect();
+    let symbol_set: HashSet<&str> = chunk
+        .symbol_tokens
+        .iter()
+        .map(|value| value.as_str())
+        .collect();
 
     for weighted in &query_terms.weighted_terms {
         let term = weighted.term.as_str();
@@ -1782,10 +1797,7 @@ fn compute_query_match(
     }
 }
 
-fn merge_adjacent_candidates(
-    candidates: Vec<QueryCandidate>,
-    top_k: usize,
-) -> Vec<QueryCandidate> {
+fn merge_adjacent_candidates(candidates: Vec<QueryCandidate>, top_k: usize) -> Vec<QueryCandidate> {
     if candidates.is_empty() {
         return candidates;
     }
@@ -1806,16 +1818,26 @@ fn merge_adjacent_candidates(
                 last.score += candidate.score;
                 last.chunk.end_line = last.chunk.end_line.max(candidate.chunk.end_line);
                 last.chunk.content_hash = sha256_hex(
-                    format!("{}:{}", last.chunk.content_hash, candidate.chunk.content_hash)
-                        .as_bytes(),
+                    format!(
+                        "{}:{}",
+                        last.chunk.content_hash, candidate.chunk.content_hash
+                    )
+                    .as_bytes(),
                 );
                 last.chunk.id = sha256_hex(
-                    format!("{}:{}:{}", last.chunk.id, candidate.chunk.id, last.chunk.end_line)
-                        .as_bytes(),
+                    format!(
+                        "{}:{}:{}",
+                        last.chunk.id, candidate.chunk.id, last.chunk.end_line
+                    )
+                    .as_bytes(),
                 );
-                last.chunk.content = merge_chunk_content(&last.chunk.content, &candidate.chunk.content);
+                last.chunk.content =
+                    merge_chunk_content(&last.chunk.content, &candidate.chunk.content);
                 last.chunk.token_count += candidate.chunk.token_count;
-                merge_string_vec(&mut last.chunk.symbol_tokens, &candidate.chunk.symbol_tokens);
+                merge_string_vec(
+                    &mut last.chunk.symbol_tokens,
+                    &candidate.chunk.symbol_tokens,
+                );
                 merge_string_vec(&mut last.matched_terms, &candidate.matched_terms);
                 merge_string_vec(&mut last.matched_phrases, &candidate.matched_phrases);
                 merge_string_vec(&mut last.reason_labels, &candidate.reason_labels);
@@ -2029,14 +2051,7 @@ fn collect_query_hints(query: &str, broad_intent: bool) -> (Vec<String>, Vec<Str
         push_unique_values(
             &mut terms,
             &[
-                "local",
-                "search",
-                "context",
-                "index",
-                "chunk",
-                "manifest",
-                "query",
-                "cache",
+                "local", "search", "context", "index", "chunk", "manifest", "query", "cache",
                 "storage",
             ],
         );
@@ -2072,34 +2087,17 @@ fn collect_query_hints(query: &str, broad_intent: bool) -> (Vec<String>, Vec<Str
         push_unique_values(
             &mut terms,
             &[
-                "codex",
-                "provider",
-                "config",
-                "model",
-                "api",
-                "key",
-                "base",
-                "timeout",
+                "codex", "provider", "config", "model", "api", "key", "base", "timeout",
             ],
         );
-        push_unique_values(
-            &mut phrases,
-            &["codex provider", "chat completions"],
-        );
+        push_unique_values(&mut phrases, &["codex provider", "chat completions"]);
     }
 
     if query.contains("配置") || lowered.contains("config") {
         push_unique_values(
             &mut terms,
             &[
-                "config",
-                "provider",
-                "model",
-                "timeout",
-                "api",
-                "key",
-                "base",
-                "env",
+                "config", "provider", "model", "timeout", "api", "key", "base", "env",
             ],
         );
         push_unique_values(
@@ -2111,12 +2109,11 @@ fn collect_query_hints(query: &str, broad_intent: bool) -> (Vec<String>, Vec<Str
     if query.contains("超时") || lowered.contains("timeout") {
         push_unique_values(
             &mut terms,
-            &["timeout", "summary", "search", "context", "request", "retry"],
+            &[
+                "timeout", "summary", "search", "context", "request", "retry",
+            ],
         );
-        push_unique_values(
-            &mut phrases,
-            &["search timeout", "summary timeout"],
-        );
+        push_unique_values(&mut phrases, &["search timeout", "summary timeout"]);
     }
 
     if query.contains(".ace-tool")
@@ -2127,14 +2124,7 @@ fn collect_query_hints(query: &str, broad_intent: bool) -> (Vec<String>, Vec<Str
         push_unique_values(
             &mut terms,
             &[
-                "project",
-                "root",
-                "storage",
-                "manifest",
-                "meta",
-                "chunks",
-                "query",
-                "cache",
+                "project", "root", "storage", "manifest", "meta", "chunks", "query", "cache",
             ],
         );
         push_unique_values(
@@ -2154,10 +2144,7 @@ fn collect_query_hints(query: &str, broad_intent: bool) -> (Vec<String>, Vec<Str
             &mut terms,
             &["index", "chunk", "manifest", "meta", "query", "cache"],
         );
-        push_unique_values(
-            &mut phrases,
-            &["query cache", "local search"],
-        );
+        push_unique_values(&mut phrases, &["query cache", "local search"]);
     }
 
     if broad_intent && terms.is_empty() {
@@ -2176,8 +2163,7 @@ fn compute_local_rerank_timeout(
     rerank_timeout_sec: u64,
 ) -> Option<Duration> {
     let remaining = Duration::from_secs(search_timeout_sec).saturating_sub(elapsed);
-    let usable_budget =
-        remaining.saturating_sub(Duration::from_secs(RERANK_RESPONSE_GUARD_SEC));
+    let usable_budget = remaining.saturating_sub(Duration::from_secs(RERANK_RESPONSE_GUARD_SEC));
     if usable_budget < Duration::from_secs(MIN_RERANK_BUDGET_SEC) {
         return None;
     }
@@ -2195,13 +2181,9 @@ fn push_unique_values(target: &mut Vec<String>, values: &[&str]) {
     }
 }
 
-fn compute_local_summary_timeout(
-    search_timeout_sec: u64,
-    elapsed: Duration,
-) -> Option<Duration> {
+fn compute_local_summary_timeout(search_timeout_sec: u64, elapsed: Duration) -> Option<Duration> {
     let remaining = Duration::from_secs(search_timeout_sec).saturating_sub(elapsed);
-    let usable_budget =
-        remaining.saturating_sub(Duration::from_secs(SUMMARY_RESPONSE_GUARD_SEC));
+    let usable_budget = remaining.saturating_sub(Duration::from_secs(SUMMARY_RESPONSE_GUARD_SEC));
     if usable_budget < Duration::from_secs(MIN_SUMMARY_BUDGET_SEC) {
         return None;
     }
@@ -2385,11 +2367,7 @@ fn render_context_for_summary(candidates: &[QueryCandidate]) -> String {
     let mut blocks = Vec::new();
     let mut total_chars = 0usize;
 
-    for (idx, candidate) in candidates
-        .iter()
-        .take(SUMMARY_MAX_CANDIDATES)
-        .enumerate()
-    {
+    for (idx, candidate) in candidates.iter().take(SUMMARY_MAX_CANDIDATES).enumerate() {
         let snippet = build_summary_snippet(&candidate.chunk.content);
         let mut block = format!(
             "片段 {} | 文件: {} | 行号: {}-{} | 关键词得分: {:.4} | 命中原因: {}",
@@ -2401,10 +2379,7 @@ fn render_context_for_summary(candidates: &[QueryCandidate]) -> String {
             render_candidate_reason_summary(candidate)
         );
         if !candidate.matched_terms.is_empty() {
-            block.push_str(&format!(
-                "\n命中词: {}",
-                candidate.matched_terms.join(", ")
-            ));
+            block.push_str(&format!("\n命中词: {}", candidate.matched_terms.join(", ")));
         }
         if !candidate.matched_phrases.is_empty() {
             block.push_str(&format!(
@@ -2454,9 +2429,7 @@ fn render_structured_fallback(
     fallback_reason: Option<&str>,
 ) -> String {
     let mut lines = Vec::new();
-    lines.push(
-        "Conclusion: 已召回最相关的本地代码片段，当前返回结构化本地结果。".to_string(),
-    );
+    lines.push("Conclusion: 已召回最相关的本地代码片段，当前返回结构化本地结果。".to_string());
     if let Some(reason) = fallback_reason {
         lines.push(format!("Fallback reason: {}", reason));
     }
@@ -2549,7 +2522,12 @@ fn render_candidate_reason_summary(candidate: &QueryCandidate) -> String {
     parts.join("; ")
 }
 
-fn build_local_summary_payload(model: &str, query: &str, context: &str) -> Value {
+fn build_local_summary_payload(
+    model: &str,
+    reasoning_effort: &str,
+    query: &str,
+    context: &str,
+) -> Value {
     json!({
         "model": model,
         "messages": [
@@ -2563,7 +2541,7 @@ fn build_local_summary_payload(model: &str, query: &str, context: &str) -> Value
             }
         ],
         "temperature": 0.1,
-        "reasoning_effort": local_summary_reasoning_effort_for_model(model)
+        "reasoning_effort": reasoning_effort
     })
 }
 
@@ -2585,15 +2563,6 @@ fn build_local_rerank_payload(model: &str, query: &str, context: &str) -> Value 
             "type": "json_object"
         }
     })
-}
-
-fn local_summary_reasoning_effort_for_model(model: &str) -> &'static str {
-    let normalized = model.trim().to_ascii_lowercase();
-    if normalized == "gpt-5-pro" {
-        "high"
-    } else {
-        "low"
-    }
 }
 
 fn parse_chat_completion_text(response_text: &str) -> Result<String, String> {
@@ -2734,7 +2703,10 @@ fn build_candidate_signature(candidates: &[QueryCandidate]) -> String {
     digest.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-fn apply_rerank_order(candidates: &[QueryCandidate], ordered_ids: &[String]) -> Vec<QueryCandidate> {
+fn apply_rerank_order(
+    candidates: &[QueryCandidate],
+    ordered_ids: &[String],
+) -> Vec<QueryCandidate> {
     let mut by_id = candidates
         .iter()
         .cloned()
@@ -2810,7 +2782,8 @@ fn now_unix_seconds() -> u64 {
 }
 
 fn contains_cjk(text: &str) -> bool {
-    text.chars().any(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch))
+    text.chars()
+        .any(|ch| ('\u{4e00}'..='\u{9fff}').contains(&ch))
 }
 
 fn sha256_hex(input: &[u8]) -> String {
@@ -2824,10 +2797,9 @@ fn sha256_hex(input: &[u8]) -> String {
 mod tests {
     use super::{
         LocalChunkRecord, LocalIndexRebuildMode, LocalRerankMode, QueryCacheEntry,
-        apply_rerank_order, build_local_summary_payload, build_query_terms,
-        build_rerank_candidate, build_summary_snippet, build_token_freq,
-        compute_local_rerank_timeout, compute_local_summary_timeout, determine_rebuild_reason,
-        is_query_cache_entry_expired, local_summary_reasoning_effort_for_model,
+        apply_rerank_order, build_local_summary_payload, build_query_terms, build_rerank_candidate,
+        build_summary_snippet, build_token_freq, compute_local_rerank_timeout,
+        compute_local_summary_timeout, determine_rebuild_reason, is_query_cache_entry_expired,
         merge_adjacent_candidates, normalize_search_text, parse_rerank_result, prepare_query,
         rank_candidates, render_context_for_rerank, render_context_for_summary,
         render_structured_fallback, split_content_into_local_chunks, tokenize_search_text,
@@ -2894,7 +2866,12 @@ mod tests {
     fn query_terms_cover_english_and_cjk() {
         let terms = build_query_terms("search_context 本地 检索");
         assert!(terms.weighted_terms.iter().any(|t| t.term.contains("本地")));
-        assert!(terms.weighted_terms.iter().any(|t| t.term.contains("search")));
+        assert!(
+            terms
+                .weighted_terms
+                .iter()
+                .any(|t| t.term.contains("search"))
+        );
     }
 
     #[test]
@@ -2957,7 +2934,10 @@ mod tests {
             .join("\n");
         let snippet = build_summary_snippet(&content);
         assert!(snippet.lines().count() <= super::SUMMARY_SNIPPET_MAX_LINES + 1);
-        assert!(snippet.contains("truncated") || snippet.chars().count() <= super::SUMMARY_SNIPPET_MAX_CHARS);
+        assert!(
+            snippet.contains("truncated")
+                || snippet.chars().count() <= super::SUMMARY_SNIPPET_MAX_CHARS
+        );
     }
 
     #[test]
@@ -3036,11 +3016,8 @@ mod tests {
 
     #[test]
     fn determine_rebuild_reason_prefers_recovery_reason() {
-        let reason = determine_rebuild_reason(
-            LocalIndexRebuildMode::Auto,
-            true,
-            Some("chunk_unreadable"),
-        );
+        let reason =
+            determine_rebuild_reason(LocalIndexRebuildMode::Auto, true, Some("chunk_unreadable"));
         assert_eq!(reason, "chunk_unreadable");
     }
 
@@ -3071,18 +3048,15 @@ mod tests {
 
     #[test]
     fn local_summary_payload_uses_configured_model_and_reasoning_effort() {
-        let payload = build_local_summary_payload("gpt-5.4", "where", "snippet");
-        assert_eq!(payload.get("model").and_then(|v| v.as_str()), Some("gpt-5.4"));
+        let payload = build_local_summary_payload("gpt-5.4", "medium", "where", "snippet");
+        assert_eq!(
+            payload.get("model").and_then(|v| v.as_str()),
+            Some("gpt-5.4")
+        );
         assert_eq!(
             payload.get("reasoning_effort").and_then(|v| v.as_str()),
-            Some("low")
+            Some("medium")
         );
-    }
-
-    #[test]
-    fn local_summary_reasoning_effort_handles_gpt_5_pro_exception() {
-        assert_eq!(local_summary_reasoning_effort_for_model("gpt-5-pro"), "high");
-        assert_eq!(local_summary_reasoning_effort_for_model("gpt-5.4"), "low");
     }
 
     #[test]
@@ -3102,7 +3076,10 @@ mod tests {
     fn compute_local_rerank_timeout_enforces_minimum_default_floor() {
         let timeout =
             compute_local_rerank_timeout(50, Duration::from_secs(2), 3).expect("rerank budget");
-        assert_eq!(timeout, Duration::from_secs(super::DEFAULT_RERANK_TIMEOUT_SEC));
+        assert_eq!(
+            timeout,
+            Duration::from_secs(super::DEFAULT_RERANK_TIMEOUT_SEC)
+        );
     }
 
     #[test]
@@ -3186,22 +3163,24 @@ mod tests {
     #[test]
     fn render_context_for_rerank_respects_context_budget() {
         let candidates = (0..12)
-            .map(|idx| build_rerank_candidate(&super::QueryCandidate {
-                score: 20.0 - idx as f32,
-                chunk: chunk_with_range(
-                    &format!("src/rerank_{}.rs", idx),
-                    1,
-                    60,
-                    &(1..=30)
-                        .map(|line| format!("line {} {}", line, "z".repeat(110)))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                    &["rerank", "local", "search"],
-                ),
-                matched_terms: vec!["rerank".to_string(), "search".to_string()],
-                matched_phrases: vec!["local search".to_string()],
-                reason_labels: vec!["正文命中".to_string()],
-            }))
+            .map(|idx| {
+                build_rerank_candidate(&super::QueryCandidate {
+                    score: 20.0 - idx as f32,
+                    chunk: chunk_with_range(
+                        &format!("src/rerank_{}.rs", idx),
+                        1,
+                        60,
+                        &(1..=30)
+                            .map(|line| format!("line {} {}", line, "z".repeat(110)))
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                        &["rerank", "local", "search"],
+                    ),
+                    matched_terms: vec!["rerank".to_string(), "search".to_string()],
+                    matched_phrases: vec!["local search".to_string()],
+                    reason_labels: vec!["正文命中".to_string()],
+                })
+            })
             .collect::<Vec<_>>();
         let context = render_context_for_rerank(&candidates);
         assert!(context.chars().count() <= super::RERANK_CONTEXT_MAX_CHARS);
@@ -3227,7 +3206,13 @@ mod tests {
     fn prepare_query_keeps_specific_code_query_non_broad() {
         let prepared = prepare_query("LocalSearchProvider search_context timeout");
         assert!(!prepared.broad_intent);
-        assert!(prepared.terms.weighted_terms.iter().any(|term| term.term == "search"));
+        assert!(
+            prepared
+                .terms
+                .weighted_terms
+                .iter()
+                .any(|term| term.term == "search")
+        );
     }
 
     #[test]
@@ -3275,6 +3260,7 @@ mod tests {
             max_lines_per_blob: 800,
             codex_api_base: "https://example.com/v1".to_string(),
             codex_model: "gpt-5.4-mini".to_string(),
+            codex_reasoning_effort: "low".to_string(),
             rerank_model: "gpt-5.4-mini".to_string(),
             summary_mode: super::LocalSummaryMode::LocalFallbackOnly,
             rerank_mode: LocalRerankMode::BroadOnly,

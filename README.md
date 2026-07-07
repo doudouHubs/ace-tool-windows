@@ -23,7 +23,7 @@ npm i -g ace-tool-windows
 
 建议：
 - 不要把 token 提交到 Git 仓库。
-- 优先通过环境变量或本地脚本参数注入。
+- 优先写入用户级本地配置文件 `~/.ace-tool/config.json`。
 - 如果使用 `search` 的 `remote` 模式，必须配置 `--base-url` 与 `--token`。
 - 如果使用 `search` 的 `local` 模式且启用 GPT 总结/重排，需要可访问的 GPT API 网关与有效 API Key。
 
@@ -33,7 +33,7 @@ npm i -g ace-tool-windows
 
 - `remote`：沿用 ACE 远端检索服务。
 - `local`：在项目根 `.ace-tool/local-search/` 中维护增量索引、chunk 分片和查询缓存，先做本地关键词召回，再用 GPT 总结或本地结构化降级输出。
-- 默认：`remote`
+- 默认：`local` + `local_fallback_only` + `rerank off`，无 token 也能返回结构化本地检索结果。
 
 远端检索示例：
 
@@ -125,9 +125,73 @@ ace-tool-win enhance --project-root <PROJECT_ROOT> --prompt "重构这个模块 
 - 服务端会对短时间内完全相同的增强请求做去重（约 180 秒）。
 - 增强文本采用“语义自适应”排版：在不改变语义前提下提升细节和可读性，不强制固定模板。
 
-## 7. 环境变量
+## 7. 本地配置文件
 
-### 7.1 `remote` 模式
+插件模式不再使用 MCP Server 配置。运行时按以下优先级读取参数：
+
+```text
+CLI 参数 > 项目级 <PROJECT_ROOT>/.ace-tool/config.json > 用户级 ~/.ace-tool/config.json > 环境变量 > 内置默认值
+```
+
+推荐把跨项目密钥写到用户级配置：
+
+```powershell
+New-Item -ItemType Directory -Force "$HOME\.ace-tool" | Out-Null
+@'
+{
+  "baseUrl": "https://acemcp.heroman.wtf/relay/",
+  "token": "<YOUR_TOKEN>",
+  "enhanceProvider": "codex",
+  "codexApiBase": "http://your-gpt-gateway/v1",
+  "codexApiKey": "<YOUR_GPT_KEY>",
+  "codexModel": "gpt-5.4",
+  "codexReasoningEffort": "low",
+  "searchProvider": "local",
+  "debug": true,
+  "debugVerbose": true,
+  "localSummaryMode": "local_fallback_only",
+  "localRerankMode": "off",
+  "searchTimeoutSec": 50,
+  "enhanceTimeoutSec": 180,
+  "uiTimeoutSec": 480
+}
+'@ | Set-Content -Path "$HOME\.ace-tool\config.json" -Encoding utf8
+```
+
+项目级配置写在当前仓库：
+
+```text
+<PROJECT_ROOT>/.ace-tool/config.json
+```
+
+项目级配置会覆盖用户级配置，适合给不同代码库设置不同检索策略。当前仓库的 `.gitignore` 已忽略 `.ace-tool/`，但你在其他项目里也要确认不要把 token/API key 提交出去，别把钥匙挂门口上。
+
+支持字段：
+- `baseUrl` / `token`：`remote` 检索和增强服务配置。
+- `searchProvider`：`remote|local`，默认 `local`。
+- `enhanceProvider`：`remote|codex`，默认 `remote`。
+- `codexApiBase` / `codexApiKey` / `codexModel`：`codex` provider 和 GPT 总结/重排配置。
+- `codexReasoningEffort`：`low|medium|high`，默认 `low`，用于 `codex` 增强和本地 GPT summary 请求。
+- `debug` / `debugVerbose` / `debugFile`：调试日志开关、详细日志开关和日志文件路径。
+- `localSummaryMode`：`gpt|local_fallback_only`，默认 `local_fallback_only`。
+- `localIndexRebuild`：`auto|force_full`，默认 `auto`。
+- `localRerankMode`：`off|broad_only`，默认 `off`。
+- `localRerankPoolSize`：默认 `12`，范围 `4-32`。
+- `localRerankTimeoutSec`：默认 `10`，范围 `3-120`。
+- `localRerankModel`：未配置时跟随 `codexModel`。
+- `searchTimeoutSec`：默认 `50`，范围 `10-300`。
+- `enhanceTimeoutSec`：范围 `10-600`；未显式配置时 `remote` 默认 `90`，`codex` 至少 `180`。
+- `uiTimeoutSec`：默认 `480`，范围 `30-3600`。
+- `maxLinesPerBlob`：默认 `800`，范围 `50-5000`。
+- `textExtensions`：可索引后缀列表，例如 `["rs", ".ts", ".md"]`。
+- `excludePatterns`：索引排除模式列表。
+- `enableLog`：是否启用项目级 `.ace-tool/ace-tool.log`。
+
+字段也兼容 snake_case，例如 `codex_api_base`、`search_provider`。
+
+## 8. 环境变量
+
+### 8.1 `remote` 模式
 
 ```powershell
 $env:ACE_TOOL_BASE_URL = "https://acemcp.heroman.wtf/relay/"
@@ -136,16 +200,17 @@ $env:ACE_TOOL_ENHANCE_PROVIDER = "remote"
 $env:ACE_TOOL_SEARCH_PROVIDER = "remote"
 ```
 
-### 7.2 `codex` 模式
+### 8.2 `codex` 模式
 
 ```powershell
 $env:ACE_TOOL_ENHANCE_PROVIDER = "codex"
 $env:ACE_TOOL_CODEX_API_BASE = "http://your-gpt-gateway/v1"
 $env:ACE_TOOL_CODEX_API_KEY = "<YOUR_GPT_KEY>"
 $env:ACE_TOOL_CODEX_MODEL = "gpt-5.4"
+$env:ACE_TOOL_CODEX_REASONING_EFFORT = "low"
 ```
 
-### 7.3 通用变量
+### 8.3 通用变量
 
 - `ACE_TOOL_ENHANCE_TIMEOUT_SEC=90`（范围 10-600；未显式配置时 `remote` 默认 90 秒，`codex` 默认 180 秒）
 - `ACE_TOOL_SEARCH_TIMEOUT_SEC=50`（范围 10-300；控制 `search` 整体超时）
@@ -162,13 +227,18 @@ $env:ACE_TOOL_CODEX_MODEL = "gpt-5.4"
 - `ACE_TOOL_LOCAL_RERANK_POOL_SIZE=12`
 - `ACE_TOOL_LOCAL_RERANK_TIMEOUT_SEC=10`
 - `ACE_TOOL_LOCAL_RERANK_MODEL=gpt-5.4-mini`
+- `ACE_TOOL_BATCH_SIZE=10`
+- `ACE_TOOL_MAX_LINES_PER_BLOB=800`
+- `ACE_TOOL_TEXT_EXTENSIONS=rs,ts,md`
+- `ACE_TOOL_EXCLUDE_PATTERNS=node_modules,target,.git`
+- `ACE_TOOL_ENABLE_LOG=1`
 
-## 8. 超时规则
+## 9. 超时规则
 
 - `ACE_TOOL_SEARCH_TIMEOUT_SEC`：`search` 总超时，范围 10-300 秒，默认 50 秒。
-- `ACE_TOOL_LOCAL_SUMMARY_MODE`：`local` 检索答案总结模式，默认 `gpt`；设为 `local_fallback_only` 时不请求远端总结接口。
+- `ACE_TOOL_LOCAL_SUMMARY_MODE`：`local` 检索答案总结模式，默认 `local_fallback_only`；设为 `gpt` 时请求 GPT API 总结。
 - `ACE_TOOL_LOCAL_INDEX_REBUILD`：`local` 检索索引刷新策略，默认 `auto`；设为 `force_full` 时每次强制全量重建本地索引。
-- `ACE_TOOL_LOCAL_RERANK_MODE`：本地检索语义重排模式，默认 `broad_only`；仅宽查询触发 GPT rerank。
+- `ACE_TOOL_LOCAL_RERANK_MODE`：本地检索语义重排模式，默认 `off`；设为 `broad_only` 时仅宽查询触发 GPT rerank。
 - `ACE_TOOL_LOCAL_RERANK_POOL_SIZE`：进入 rerank 前参与重排的候选池大小，默认 `12`，范围 `4-32`。
 - `ACE_TOOL_LOCAL_RERANK_TIMEOUT_SEC`：单次 rerank 请求预算，默认 `10` 秒；仍受 `ACE_TOOL_SEARCH_TIMEOUT_SEC` 总预算约束。
 - `ACE_TOOL_LOCAL_RERANK_MODEL`：rerank 专用模型名；未配置时跟随 `ACE_TOOL_CODEX_MODEL`。
@@ -180,9 +250,9 @@ $env:ACE_TOOL_CODEX_MODEL = "gpt-5.4"
 - `codex` provider 的 HTTP 请求会复用上述增强超时。
 - `codex` provider 会对 `429 / 502 / 503 / 504` 以及连接超时自动做最多 3 次重试。
 
-## 9. 故障排查
+## 10. 故障排查
 
-### 9.1 插件脚本启动失败
+### 10.1 插件脚本启动失败
 
 检查项：
 - `bin/ace-tool-win.exe` 是否存在。
@@ -190,14 +260,14 @@ $env:ACE_TOOL_CODEX_MODEL = "gpt-5.4"
 - `--base-url` 与 `--token` 是否正确。
 - 开启 `ACE_TOOL_DEBUG=1` 查看日志链路。
 
-### 9.2 窗口不弹出或卡住
+### 10.2 窗口不弹出或卡住
 
 检查项：
 - 是否启用了 `ACE_TOOL_HEADLESS=1`。
 - Windows 权限或安全软件是否拦截窗口创建。
 - 调试日志中是否出现 `enhance_prompt: opening ui`。
 
-### 9.3 Token 认证失败
+### 10.3 Token 认证失败
 
 典型返回：401 / 403。
 
@@ -205,13 +275,13 @@ $env:ACE_TOOL_CODEX_MODEL = "gpt-5.4"
 - 到 <https://acemcp.heroman.wtf> 重新生成 token。
 - 更新环境变量或脚本参数后重试。
 
-### 9.4 中文显示异常 / 乱码
+### 10.4 中文显示异常 / 乱码
 
 当前版本已增加 UTF-8/BOM/GBK 等解码兜底。若仍异常：
 - 确认终端与编辑器编码为 UTF-8。
 - 打开 `ACE_TOOL_DEBUG=1`，附带日志定位具体节点。
 
-### 9.5 Codex provider 调用失败 / HTTP 返回异常
+### 10.5 Codex provider 调用失败 / HTTP 返回异常
 
 检查项：
 - `--codex-api-base` / `ACE_TOOL_CODEX_API_BASE` 是否正确。
@@ -219,7 +289,7 @@ $env:ACE_TOOL_CODEX_MODEL = "gpt-5.4"
 - `--codex-model` / `ACE_TOOL_CODEX_MODEL` 是否为网关支持的模型名。
 - 开启 `ACE_TOOL_DEBUG=1` 查看错误类型（timeout/auth/network/rate_limit 等）。
 
-## 10. 从源码构建
+## 11. 从源码构建
 
 ```powershell
 # release

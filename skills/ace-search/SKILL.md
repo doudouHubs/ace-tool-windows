@@ -25,6 +25,7 @@ $pluginRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 
 ## Guardrails
 
-- The script defaults to local provider with structured fallback so it can work without remote credentials.
+- The script follows ACE Tool config resolution; default search behavior is local provider with structured fallback, so it can work without remote credentials.
+- Use `<project>/.ace-tool/config.json` or `~/.ace-tool/config.json` for provider/token/model settings instead of MCP configuration.
 - Do not use this for exact identifier grep; use repository search tools instead.
 - Treat ACE output as context, not as authoritative proof; verify important claims by reading files.

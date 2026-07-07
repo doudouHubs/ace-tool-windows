@@ -9,9 +9,9 @@ use config::Config;
 use enhancer::codex_provider::CodexProvider;
 use enhancer::enhancer::RemoteProvider;
 use enhancer::provider::{EnhanceProvider, EnhanceProviderKind};
-use index::{LocalIndexRebuildMode, LocalRerankMode, LocalSummaryMode, SearchProviderKind};
 use index::local_search::LocalSearchProvider;
 use index::manager::IndexManager;
+use index::{LocalIndexRebuildMode, LocalRerankMode, LocalSummaryMode, SearchProviderKind};
 use logging::log_debug;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -49,6 +49,11 @@ fn main() -> std::io::Result<()> {
             std::process::exit(1);
         }
     };
+    logging::configure_debug_logging(
+        config.debug,
+        config.debug_verbose,
+        non_empty_path(&config.debug_file),
+    );
 
     let runtime = Arc::new(Runtime::new().expect("Failed to create Tokio runtime"));
     let config = Arc::new(config);
@@ -181,8 +186,8 @@ where
         }
     }
 
-    let project_root_path = project_root_path
-        .ok_or_else(|| "Missing required argument: --project-root".to_string())?;
+    let project_root_path =
+        project_root_path.ok_or_else(|| "Missing required argument: --project-root".to_string())?;
 
     match command.as_str() {
         "search" => Ok(Some(Command::Search {
@@ -201,7 +206,16 @@ where
 }
 
 fn expects_value(arg: &str) -> bool {
-    !matches!(arg, "--enable-log")
+    !matches!(arg, "--enable-log" | "--debug" | "--debug-verbose")
+}
+
+fn non_empty_path(value: &str) -> Option<PathBuf> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(trimmed))
+    }
 }
 
 fn render_cli_result(
@@ -271,11 +285,7 @@ fn handle_search_context(
 
     let search_provider_kind = resolve_search_provider_kind(config)?;
 
-    let timeout_sec = std::env::var("ACE_TOOL_SEARCH_TIMEOUT_SEC")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|v| *v >= 10 && *v <= 300)
-        .unwrap_or(50);
+    let timeout_sec = config.search_timeout_sec;
     log_debug(format!(
         "search_context: start root={} resolved_root={} query_len={} timeout={}s provider={}",
         project_root_path,
@@ -318,6 +328,7 @@ fn handle_search_context(
                         config.codex_api_base.clone(),
                         config.codex_api_key.clone(),
                         config.codex_model.clone(),
+                        config.codex_reasoning_effort.clone(),
                         local_summary_mode,
                         local_rerank_mode,
                         local_index_rebuild_mode,
@@ -445,6 +456,7 @@ fn handle_enhance_prompt(
                     config.codex_api_base.clone(),
                     config.codex_api_key.clone(),
                     config.codex_model.clone(),
+                    config.codex_reasoning_effort.clone(),
                     enhance_timeout_sec,
                 )
                 .map_err(|e| format!("Error: {e}"))?,
@@ -878,12 +890,17 @@ mod tests {
             codex_api_base: "https://example.com/v1".to_string(),
             codex_api_key: "token".to_string(),
             codex_model: "gpt-5.4".to_string(),
+            codex_reasoning_effort: "low".to_string(),
+            debug: false,
+            debug_verbose: false,
+            debug_file: String::new(),
             local_summary_mode: "gpt".to_string(),
             local_index_rebuild: "auto".to_string(),
             local_rerank_mode: "broad_only".to_string(),
             local_rerank_pool_size: 12,
             local_rerank_timeout_sec: 10,
             local_rerank_model: "gpt-5.4".to_string(),
+            search_timeout_sec: 50,
             enhance_timeout_sec: 90,
             enhance_timeout_explicit: false,
             ui_timeout_sec: 480,
@@ -1135,9 +1152,7 @@ fn resolve_local_index_rebuild_mode(config: &Config) -> Result<LocalIndexRebuild
 
 fn require_remote_credentials(config: &Config) -> Result<(), String> {
     if config.base_url.trim().is_empty() {
-        return Err(
-            "Missing required remote config: --base-url or ACE_TOOL_BASE_URL".to_string(),
-        );
+        return Err("Missing required remote config: --base-url or ACE_TOOL_BASE_URL".to_string());
     }
     if config.token.trim().is_empty() {
         return Err("Missing required remote config: --token or ACE_TOOL_TOKEN".to_string());
