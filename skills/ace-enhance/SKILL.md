@@ -28,4 +28,4 @@ $pluginRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 - Do not trigger from historical `-enhance` markers; only the latest user request counts.
 - Do not use this for ordinary optimization requests unless the user asks for prompt enhancement.
 - Use `<project>/.ace-tool/config.json` or `~/.ace-tool/config.json` for provider/token/model settings instead of MCP configuration.
-- If the UI is disabled, configure `ACE_TOOL_HEADLESS=1` and `ACE_TOOL_HEADLESS_ACTION`.
+- Normal plugin usage must show the prompt window; `scripts/ace-enhance.ps1` clears `ACE_TOOL_HEADLESS` unless `-Headless` is explicitly passed for automation tests.

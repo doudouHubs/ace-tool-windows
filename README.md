@@ -153,7 +153,7 @@ New-Item -ItemType Directory -Force "$HOME\.ace-tool" | Out-Null
   "localRerankMode": "off",
   "searchTimeoutSec": 50,
   "enhanceTimeoutSec": 180,
-  "uiTimeoutSec": 480
+  "uiTimeoutSec": 0
 }
 '@ | Set-Content -Path "$HOME\.ace-tool\config.json" -Encoding utf8
 ```
@@ -181,7 +181,7 @@ New-Item -ItemType Directory -Force "$HOME\.ace-tool" | Out-Null
 - `localRerankModel`：未配置时跟随 `codexModel`。
 - `searchTimeoutSec`：默认 `50`，范围 `10-300`。
 - `enhanceTimeoutSec`：范围 `10-600`；未显式配置时 `remote` 默认 `90`，`codex` 至少 `180`。
-- `uiTimeoutSec`：默认 `480`，范围 `30-3600`。
+- `uiTimeoutSec`：默认 `0` 表示无限等待；显式设置 `30-3600` 时启用有限等待。
 - `maxLinesPerBlob`：默认 `800`，范围 `50-5000`。
 - `textExtensions`：可索引后缀列表，例如 `["rs", ".ts", ".md"]`。
 - `excludePatterns`：索引排除模式列表。
@@ -214,8 +214,8 @@ $env:ACE_TOOL_CODEX_REASONING_EFFORT = "low"
 
 - `ACE_TOOL_ENHANCE_TIMEOUT_SEC=90`（范围 10-600；未显式配置时 `remote` 默认 90 秒，`codex` 默认 180 秒）
 - `ACE_TOOL_SEARCH_TIMEOUT_SEC=50`（范围 10-300；控制 `search` 整体超时）
-- `ACE_TOOL_UI_TIMEOUT_SEC=480`（范围 30-3600）
-- `ACE_TOOL_HEADLESS=1`
+- `ACE_TOOL_UI_TIMEOUT_SEC=0`（默认无限等待；可显式设置 30-3600）
+- `ACE_TOOL_HEADLESS=1`（仅直接调用 CLI 或脚本显式 `-Headless` 测试时使用）
 - `ACE_TOOL_HEADLESS_ACTION=enhanced|end|timeout`
 - `ACE_TOOL_DEBUG=1`
 - `ACE_TOOL_DEBUG_VERBOSE=1`
@@ -244,9 +244,9 @@ $env:ACE_TOOL_CODEX_REASONING_EFFORT = "low"
 - `ACE_TOOL_LOCAL_RERANK_MODEL`：rerank 专用模型名；未配置时跟随 `ACE_TOOL_CODEX_MODEL`。
 - `local` 模式下会自动清理过期或损坏的查询缓存；默认缓存保留 7 天，并限制在最近 200 条以内。
 - `--enhance-timeout-sec` / `ACE_TOOL_ENHANCE_TIMEOUT_SEC`：增强请求超时，范围 10-600 秒；未显式配置时 `remote` 默认 90 秒，`codex` 默认 180 秒。
-- `--ui-timeout-sec` / `ACE_TOOL_UI_TIMEOUT_SEC`：UI 会话超时（默认 480 秒，范围 30-3600）。
-- 超出范围的配置会回退到默认值。
-- 交互模式下 UI 超时会回退到原始 prompt；headless 模式不显示 UI，由 `ACE_TOOL_HEADLESS_ACTION` 决定动作。
+- `--ui-timeout-sec` / `ACE_TOOL_UI_TIMEOUT_SEC`：默认 `0` 表示 UI 无限等待用户确认或关闭；显式设置 `30-3600` 时启用有限等待。
+- `uiTimeoutSec` 超出范围会直接报错，避免静默回退后窗口行为和配置预期不一致。
+- 插件脚本默认清理 `ACE_TOOL_HEADLESS`，正常增强必须显示 UI；只有显式传 `-Headless` 时才允许 headless 测试路径。
 - `codex` provider 的 HTTP 请求会复用上述增强超时。
 - `codex` provider 会对 `429 / 502 / 503 / 504` 以及连接超时自动做最多 3 次重试。
 
@@ -263,7 +263,7 @@ $env:ACE_TOOL_CODEX_REASONING_EFFORT = "low"
 ### 10.2 窗口不弹出或卡住
 
 检查项：
-- 是否启用了 `ACE_TOOL_HEADLESS=1`。
+- 是否直接调用 CLI 并显式启用了 `ACE_TOOL_HEADLESS=1`；插件脚本默认会屏蔽该变量。
 - Windows 权限或安全软件是否拦截窗口创建。
 - 调试日志中是否出现 `enhance_prompt: opening ui`。
 

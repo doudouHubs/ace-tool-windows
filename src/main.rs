@@ -471,6 +471,16 @@ fn handle_enhance_prompt(
     // UI 等待时间主要用于用户交互，接口超时用于避免网络请求卡死。
     let ui_timeout = Duration::from_secs(config.ui_timeout_sec);
     let enhance_timeout = Duration::from_secs(enhance_timeout_sec);
+    log_debug(format!(
+        "enhance_prompt: ui_timeout={} provider_timeout={}s setup_elapsed={}ms",
+        if config.ui_timeout_sec == 0 {
+            "infinite".to_string()
+        } else {
+            format!("{}s", config.ui_timeout_sec)
+        },
+        enhance_timeout_sec,
+        started.elapsed().as_millis()
+    ));
 
     if is_headless_mode() {
         log_debug("enhance_prompt: headless mode enabled".to_string());
@@ -612,7 +622,10 @@ fn handle_enhance_prompt(
         })
     });
 
-    log_debug("enhance_prompt: opening ui".to_string());
+    log_debug(format!(
+        "enhance_prompt: opening ui setup_elapsed={}ms",
+        started.elapsed().as_millis()
+    ));
     let final_result = match run_prompt_session(&prompt, ui_timeout, continue_cb, true) {
         SessionAction::UseEnhanced(content) => {
             log_debug(format!(

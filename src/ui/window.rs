@@ -78,7 +78,7 @@ struct CreateParams {
 
     prompt: String,
 
-    timeout_ms: u32,
+    timeout_ms: Option<u32>,
 
     continue_cb: ContinueCallback,
 
@@ -114,7 +114,7 @@ struct WindowState {
 
     start_at: Instant,
 
-    timeout_ms: u32,
+    timeout_ms: Option<u32>,
 
     bg_brush: HBRUSH,
 
@@ -129,7 +129,7 @@ struct PinState {
     pinned: bool,
 }
 
-/// 启动 Win32 提示词确认窗口，阻塞直到用户选择或超时。
+/// 启动 Win32 提示词确认窗口，阻塞直到用户选择、关闭或可选超时。
 pub fn run_prompt_window(
     prompt: &str,
 
@@ -139,9 +139,16 @@ pub fn run_prompt_window(
 
     auto_enhance: bool,
 ) -> SessionAction {
+    let window_started = Instant::now();
     let (sender, receiver) = channel();
 
-    let timeout_ms = timeout.as_millis().min(u32::MAX as u128) as u32;
+    let timeout_ms = ui_timeout_ms(timeout);
+    log_debug(format!(
+        "ui: run_prompt_window start prompt_len={} auto_enhance={} timeout={}",
+        prompt.chars().count(),
+        auto_enhance,
+        describe_ui_timeout(timeout_ms)
+    ));
 
     unsafe {
         let hinstance = GetModuleHandleW(None).unwrap();
@@ -184,6 +191,7 @@ pub fn run_prompt_window(
             auto_enhance,
         });
 
+        let create_started = Instant::now();
         let window = windows::Win32::UI::WindowsAndMessaging::CreateWindowExW(
             Default::default(),
             PCWSTR(class_name.as_ptr()),
@@ -205,7 +213,12 @@ pub fn run_prompt_window(
             return SessionAction::Timeout;
         }
 
-        log_debug(format!("ui: window created hwnd={:?}", window));
+        log_debug(format!(
+            "ui: window created hwnd={:?} create_elapsed={}ms total_elapsed={}ms",
+            window,
+            create_started.elapsed().as_millis(),
+            window_started.elapsed().as_millis()
+        ));
         let _ = ShowWindow(window, SW_RESTORE);
         let _ = SetForegroundWindow(window);
         let state_ptr = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut WindowState;
@@ -270,7 +283,14 @@ unsafe extern "system" fn wnd_proc(
 
             let pin_button = create_button(hwnd, pin_label, 820, 16, 44, 32, ID_BTN_PIN, true);
 
-            let countdown_text = format!("剩余时间 {}", format_remaining(params.timeout_ms));
+            let create_started = Instant::now();
+            log_debug(format!(
+                "ui: wm_create start auto_enhance={} timeout={}",
+                params.auto_enhance,
+                describe_ui_timeout(params.timeout_ms)
+            ));
+
+            let countdown_text = timeout_label(params.timeout_ms);
 
             let countdown_label = create_label(hwnd, &countdown_text, 20, 24, 160, 24);
             let loading_icon = create_label(hwnd, "⏳", 190, 24, 20, 24);
@@ -410,9 +430,12 @@ unsafe extern "system" fn wnd_proc(
 
                 apply_responsive_layout(hwnd, &*state_ptr);
 
-                SetTimer(hwnd, ID_TIMER_TIMEOUT, params.timeout_ms, None);
+                if let Some(timeout_ms) = params.timeout_ms {
+                    // 只有显式有限等待才注册超时定时器；默认无限等待必须由用户主动确认或关闭。
+                    SetTimer(hwnd, ID_TIMER_TIMEOUT, timeout_ms, None);
 
-                SetTimer(hwnd, ID_TIMER_COUNTDOWN, 1000, None);
+                    SetTimer(hwnd, ID_TIMER_COUNTDOWN, 1000, None);
+                }
 
                 if !auto_enhance {
                     set_loading(&*state_ptr, false);
@@ -444,6 +467,12 @@ unsafe extern "system" fn wnd_proc(
                         }
                     });
                 }
+
+                log_debug(format!(
+                    "ui: wm_create done elapsed={}ms auto_enhance={}",
+                    create_started.elapsed().as_millis(),
+                    auto_enhance
+                ));
 
                 if pinned {
                     let _ = SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
@@ -611,9 +640,13 @@ unsafe extern "system" fn wnd_proc(
                 let state =
                     unsafe { &mut *(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState) };
 
+                let Some(timeout_ms) = state.timeout_ms else {
+                    return LRESULT(0);
+                };
+
                 let elapsed = state.start_at.elapsed().as_millis() as u64;
 
-                let remaining = state.timeout_ms.saturating_sub(elapsed as u32);
+                let remaining = timeout_ms.saturating_sub(elapsed as u32);
 
                 let text = format!("剩余时间 {}", format_remaining(remaining));
 
@@ -1013,6 +1046,28 @@ fn set_control_font(hwnd: HWND, font: HFONT) {
     }
 }
 
+fn ui_timeout_ms(timeout: Duration) -> Option<u32> {
+    if timeout.is_zero() {
+        return None;
+    }
+
+    Some(timeout.as_millis().min(u32::MAX as u128) as u32)
+}
+
+fn timeout_label(timeout_ms: Option<u32>) -> String {
+    match timeout_ms {
+        Some(ms) => format!("剩余时间 {}", format_remaining(ms)),
+        None => "等待用户确认".to_string(),
+    }
+}
+
+fn describe_ui_timeout(timeout_ms: Option<u32>) -> String {
+    match timeout_ms {
+        Some(ms) => format!("{}ms", ms),
+        None => "infinite".to_string(),
+    }
+}
+
 /// 将剩余毫秒数格式化为 mm:ss。
 fn format_remaining(ms: u32) -> String {
     let total = ms / 1000;
@@ -1032,6 +1087,26 @@ fn post_enhance_message(hwnd: HWND, message: u32, payload: String) {
             log_debug(format!("ui: post message failed msg={}", message));
             let _ = Box::from_raw(ptr);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{timeout_label, ui_timeout_ms};
+    use std::time::Duration;
+
+    #[test]
+    fn zero_duration_disables_ui_timeout() {
+        assert_eq!(ui_timeout_ms(Duration::ZERO), None);
+        assert_eq!(timeout_label(None), "等待用户确认");
+    }
+
+    #[test]
+    fn finite_duration_keeps_countdown_timeout() {
+        let timeout = ui_timeout_ms(Duration::from_secs(30));
+
+        assert_eq!(timeout, Some(30_000));
+        assert_eq!(timeout_label(timeout), "剩余时间 00:30");
     }
 }
 

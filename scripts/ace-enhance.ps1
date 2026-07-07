@@ -17,6 +17,8 @@
 
   [int]$UiTimeoutSec,
 
+  [switch]$Headless,
+
   [string]$AceToolExe
 )
 
@@ -52,7 +54,32 @@ if ($PSBoundParameters.ContainsKey("UiTimeoutSec")) {
   $arguments += @("--ui-timeout-sec", [string]$UiTimeoutSec)
 }
 
-& $AceToolExe @arguments
-if ($LASTEXITCODE -ne 0) {
-  throw "ace-tool enhance failed with exit code $LASTEXITCODE"
+$previousHeadless = $env:ACE_TOOL_HEADLESS
+$previousHeadlessAction = $env:ACE_TOOL_HEADLESS_ACTION
+
+try {
+  if (-not $Headless) {
+    # 插件正常交互路径必须显示窗口；历史测试环境变量只允许在显式 -Headless 时生效。
+    Remove-Item Env:ACE_TOOL_HEADLESS -ErrorAction SilentlyContinue
+    Remove-Item Env:ACE_TOOL_HEADLESS_ACTION -ErrorAction SilentlyContinue
+  }
+
+  & $AceToolExe @arguments
+  $exitCode = $LASTEXITCODE
+} finally {
+  if ($null -ne $previousHeadless) {
+    $env:ACE_TOOL_HEADLESS = $previousHeadless
+  } else {
+    Remove-Item Env:ACE_TOOL_HEADLESS -ErrorAction SilentlyContinue
+  }
+
+  if ($null -ne $previousHeadlessAction) {
+    $env:ACE_TOOL_HEADLESS_ACTION = $previousHeadlessAction
+  } else {
+    Remove-Item Env:ACE_TOOL_HEADLESS_ACTION -ErrorAction SilentlyContinue
+  }
+}
+
+if ($exitCode -ne 0) {
+  throw "ace-tool enhance failed with exit code $exitCode"
 }

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2
+
+- Changed enhance UI default wait behavior to infinite user confirmation.
+- Added explicit `-Headless` script opt-in so normal plugin usage always opens the prompt window.
+- Added enhance UI startup timing logs for diagnosing slow window launch.
+- Kept finite UI timeout support for explicit `uiTimeoutSec` / `--ui-timeout-sec` values.
+
 ## 0.3.1
 
 - Added local JSON configuration files for plugin runtime settings.

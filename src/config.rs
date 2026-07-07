@@ -410,14 +410,11 @@ pub fn init_config() -> Result<Config, String> {
         search_timeout_sec,
         enhance_timeout_sec: enhance_timeout_override.unwrap_or(90),
         enhance_timeout_explicit: enhance_timeout_override.is_some(),
-        ui_timeout_sec: resolve_u64(
+        ui_timeout_sec: resolve_ui_timeout_sec(
             args.ui_timeout_sec,
             file_config.ui_timeout_sec,
             "ACE_TOOL_UI_TIMEOUT_SEC",
-            8 * 60,
-            30,
-            3600,
-        ),
+        )?,
     })
 }
 
@@ -714,6 +711,39 @@ fn resolve_u64_override(
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|value| *value >= min && *value <= max)
+}
+
+fn resolve_ui_timeout_sec(
+    cli_value: Option<u64>,
+    file_value: Option<u64>,
+    env_key: &str,
+) -> Result<u64, String> {
+    let resolved = if let Some(value) = cli_value {
+        Some(value)
+    } else if let Some(value) = file_value {
+        Some(value)
+    } else {
+        match std::env::var(env_key) {
+            Ok(value) => Some(value.trim().parse::<u64>().map_err(|_| {
+                format!("Invalid UI timeout: {value} (expected 0 or 30..3600 seconds)")
+            })?),
+            Err(_) => None,
+        }
+    };
+
+    let Some(value) = resolved else {
+        // 0 是交互窗口的无限等待语义，避免默认倒计时把用户还没确认的窗口关掉。
+        return Ok(0);
+    };
+
+    if value == 0 || (30..=3600).contains(&value) {
+        return Ok(value);
+    }
+
+    Err(format!(
+        "Invalid UI timeout: {} (expected 0 for infinite wait or 30..3600 seconds)",
+        value
+    ))
 }
 
 fn resolve_usize(
@@ -1095,7 +1125,7 @@ fn default_exclude_patterns() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileConfig, read_config_file};
+    use super::{FileConfig, read_config_file, resolve_ui_timeout_sec};
     use std::fs;
 
     #[test]
@@ -1190,5 +1220,35 @@ mod tests {
         assert_eq!(config.search_timeout_sec, Some(70));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ui_timeout_defaults_to_infinite_wait() {
+        let value = resolve_ui_timeout_sec(None, None, "ACE_TOOL_TEST_UI_TIMEOUT_MISSING")
+            .expect("resolve default ui timeout");
+
+        assert_eq!(value, 0);
+    }
+
+    #[test]
+    fn ui_timeout_accepts_zero_and_finite_values() {
+        assert_eq!(
+            resolve_ui_timeout_sec(Some(0), None, "ACE_TOOL_TEST_UI_TIMEOUT_ZERO")
+                .expect("zero timeout"),
+            0
+        );
+        assert_eq!(
+            resolve_ui_timeout_sec(None, Some(600), "ACE_TOOL_TEST_UI_TIMEOUT_FINITE")
+                .expect("finite timeout"),
+            600
+        );
+    }
+
+    #[test]
+    fn ui_timeout_rejects_too_short_finite_values() {
+        let err = resolve_ui_timeout_sec(Some(1), None, "ACE_TOOL_TEST_UI_TIMEOUT_INVALID")
+            .expect_err("short finite timeout should fail");
+
+        assert!(err.contains("expected 0"));
     }
 }
